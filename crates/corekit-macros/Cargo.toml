@@ -1,0 +1,12 @@
+[package]
+name = "corekit-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Proc macros for corekit."
+repository = "https://github.com/alexeichhorn/rust-corekit"
+
+[lib]
+proc-macro = true
+
+[dependencies]

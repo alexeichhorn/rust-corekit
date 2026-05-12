@@ -1,0 +1,11 @@
+[package]
+name = "corekit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Small Rust ergonomics library for backend projects."
+repository = "https://github.com/alexeichhorn/rust-corekit"
+readme = "../../README.md"
+
+[dependencies]
+corekit-macros.workspace = true
