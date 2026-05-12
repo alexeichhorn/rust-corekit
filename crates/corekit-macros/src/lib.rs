@@ -194,6 +194,19 @@ fn normalize_init_path(path: &mut Path, type_ident: &Ident) {
 #[derive(Default)]
 struct EnvConfigArgs {
     global: Option<Ident>,
+    dotenv: DotenvMode,
+}
+
+enum DotenvMode {
+    Default,
+    File(String),
+    Disabled,
+}
+
+impl Default for DotenvMode {
+    fn default() -> Self {
+        Self::Default
+    }
 }
 
 struct EnvField {
@@ -222,6 +235,7 @@ fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
     let fields = parse_env_fields(&input)?;
     let ident = &input.ident;
     let vis = &input.vis;
+    let dotenv_load = expand_dotenv_load(&args.dotenv);
 
     let field_loads = fields.iter().enumerate().map(|(index, field)| {
         let binding = format_ident!("__corekit_env_field_{index}");
@@ -264,7 +278,7 @@ fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
     Ok(quote! {
         impl #ident {
             pub fn load() -> ::std::result::Result<Self, ::corekit::EnvError> {
-                ::corekit::__private::dotenvy::dotenv().ok();
+                #dotenv_load
 
                 let mut errors = ::std::vec::Vec::new();
 
@@ -282,6 +296,18 @@ fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
 
         #global
     })
+}
+
+fn expand_dotenv_load(mode: &DotenvMode) -> proc_macro2::TokenStream {
+    match mode {
+        DotenvMode::Default => quote! {
+            ::corekit::__private::dotenvy::dotenv().ok();
+        },
+        DotenvMode::File(filename) => quote! {
+            ::corekit::__private::dotenvy::from_filename(#filename).ok();
+        },
+        DotenvMode::Disabled => quote! {},
+    }
 }
 
 impl EnvField {
@@ -376,6 +402,18 @@ fn parse_env_config_args(input: &DeriveInput) -> syn::Result<EnvConfigArgs> {
                         }
                     };
                     args.global = Some(ident);
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("dotenv") => {
+                    args.dotenv = match name_value.value {
+                        Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) => DotenvMode::File(value.value()),
+                        Expr::Lit(ExprLit { lit: Lit::Bool(value), .. }) if !value.value => DotenvMode::Disabled,
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                other,
+                                "`#[env_config(dotenv = ...)]` expects a string literal or `false`",
+                            ));
+                        }
+                    };
                 }
                 other => {
                     return Err(syn::Error::new_spanned(other, "unsupported `#[env_config]` argument"));
