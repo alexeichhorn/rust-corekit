@@ -1,4 +1,6 @@
+use std::convert::Infallible;
 use std::fmt;
+use std::str::FromStr;
 
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SecretString(String);
@@ -30,5 +32,13 @@ impl From<String> for SecretString {
 impl From<&str> for SecretString {
     fn from(value: &str) -> Self {
         Self(value.to_owned())
+    }
+}
+
+impl FromStr for SecretString {
+    type Err = Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from(value))
     }
 }

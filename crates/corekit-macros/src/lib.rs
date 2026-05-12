@@ -1,10 +1,13 @@
 //! Proc macros for corekit.
 
 use proc_macro::TokenStream;
-use quote::{quote, quote_spanned};
+use quote::{format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Expr, ExprPath, Generics, Ident, Item, ItemStruct, Meta, Path, Token};
+use syn::{
+    parse_macro_input, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemStruct, Lit, Meta, Path, Token, Type,
+    Visibility,
+};
 
 #[proc_macro_attribute]
 pub fn singleton(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -27,6 +30,16 @@ pub fn singleton(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expand_singleton(args, parsed_item, original_item).into()
+}
+
+#[proc_macro_derive(EnvConfig, attributes(env_config, env))]
+pub fn derive_env_config(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+
+    match expand_env_config(input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.into_compile_error().into(),
+    }
 }
 
 #[derive(Default)]
@@ -175,4 +188,220 @@ fn normalize_init_path(path: &mut Path, type_ident: &Ident) {
     for segment in path.segments.iter_mut() {
         segment.ident.set_span(span);
     }
+}
+
+#[derive(Default)]
+struct EnvConfigArgs {
+    global: Option<Ident>,
+}
+
+struct EnvField {
+    ident: Ident,
+    ty: Type,
+    env_name: String,
+}
+
+fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let args = parse_env_config_args(&input)?;
+    let fields = parse_env_fields(&input)?;
+    let ident = &input.ident;
+    let vis = &input.vis;
+
+    let field_loads = fields.iter().enumerate().map(|(index, field)| {
+        let binding = format_ident!("__corekit_env_field_{index}");
+        let env_name = &field.env_name;
+        let ty = &field.ty;
+
+        quote! {
+            let #binding = match ::std::env::var(#env_name) {
+                Ok(value) => match value.parse::<#ty>() {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        errors.push(::corekit::EnvVarError::invalid(#env_name));
+                        None
+                    }
+                },
+                Err(::std::env::VarError::NotPresent) => {
+                    errors.push(::corekit::EnvVarError::missing(#env_name));
+                    None
+                }
+                Err(::std::env::VarError::NotUnicode(_)) => {
+                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    None
+                }
+            };
+        }
+    });
+
+    let field_inits = fields.iter().enumerate().map(|(index, field)| {
+        let binding = format_ident!("__corekit_env_field_{index}");
+        let ident = &field.ident;
+
+        quote! {
+            #ident: #binding.expect("validated env field")
+        }
+    });
+
+    let global = args.global.map(|global| expand_env_global(vis, ident, &global));
+
+    Ok(quote! {
+        impl #ident {
+            pub fn load() -> ::std::result::Result<Self, ::corekit::EnvError> {
+                let mut errors = ::std::vec::Vec::new();
+
+                #(#field_loads)*
+
+                if !errors.is_empty() {
+                    return Err(::corekit::EnvError::new(errors));
+                }
+
+                Ok(Self {
+                    #(#field_inits,)*
+                })
+            }
+        }
+
+        #global
+    })
+}
+
+fn expand_env_global(vis: &Visibility, env_ident: &Ident, global_ident: &Ident) -> proc_macro2::TokenStream {
+    quote! {
+        #[allow(non_upper_case_globals)]
+        #vis static #global_ident: ::std::sync::LazyLock<#env_ident> = ::std::sync::LazyLock::new(|| {
+            match #env_ident::load() {
+                Ok(__corekit_env_value) => __corekit_env_value,
+                Err(error) => panic!("failed to load EnvConfig: {error}"),
+            }
+        });
+    }
+}
+
+fn parse_env_config_args(input: &DeriveInput) -> syn::Result<EnvConfigArgs> {
+    let mut args = EnvConfigArgs::default();
+
+    for attr in &input.attrs {
+        if !attr.path().is_ident("env_config") {
+            continue;
+        }
+
+        let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            match meta {
+                Meta::NameValue(name_value) if name_value.path.is_ident("global") => {
+                    let ident = match name_value.value {
+                        Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => path.segments[0].ident.clone(),
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                other,
+                                "`#[env_config(global = ...)]` expects an identifier",
+                            ));
+                        }
+                    };
+                    args.global = Some(ident);
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(other, "unsupported `#[env_config]` argument"));
+                }
+            }
+        }
+    }
+
+    Ok(args)
+}
+
+fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
+    let fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => &fields.named,
+            Fields::Unnamed(_) | Fields::Unit => {
+                return Err(syn::Error::new_spanned(
+                    &input.ident,
+                    "`EnvConfig` can only be derived for structs with named fields",
+                ));
+            }
+        },
+        Data::Enum(_) | Data::Union(_) => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                "`EnvConfig` can only be derived for structs with named fields",
+            ));
+        }
+    };
+
+    fields
+        .iter()
+        .map(|field| {
+            let ident = field.ident.clone().expect("named field has an identifier");
+            let env_name = parse_env_name(field, &ident)?;
+
+            Ok(EnvField {
+                ident,
+                ty: field.ty.clone(),
+                env_name,
+            })
+        })
+        .collect()
+}
+
+fn parse_env_name(field: &syn::Field, ident: &Ident) -> syn::Result<String> {
+    let mut name = None;
+
+    for attr in &field.attrs {
+        if !attr.path().is_ident("env") {
+            continue;
+        }
+
+        let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            match meta {
+                Meta::NameValue(name_value) if name_value.path.is_ident("name") => {
+                    let value = match name_value.value {
+                        Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) => value,
+                        other => {
+                            return Err(syn::Error::new_spanned(other, "`#[env(name = ...)]` expects a string literal"));
+                        }
+                    };
+                    name = Some(value.value());
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(other, "unsupported `#[env]` argument"));
+                }
+            }
+        }
+    }
+
+    Ok(name.unwrap_or_else(|| env_name_from_field_ident(ident)))
+}
+
+fn env_name_from_field_ident(ident: &Ident) -> String {
+    let value = ident.to_string();
+
+    if value.chars().any(|ch| ch.is_ascii_lowercase()) {
+        snake_to_screaming(&value)
+    } else {
+        value
+    }
+}
+
+fn snake_to_screaming(value: &str) -> String {
+    let mut output = String::new();
+    let mut previous_was_lower_or_digit = false;
+
+    for ch in value.chars() {
+        if ch == '_' {
+            output.push('_');
+            previous_was_lower_or_digit = false;
+            continue;
+        }
+
+        if ch.is_ascii_uppercase() && previous_was_lower_or_digit {
+            output.push('_');
+        }
+
+        output.push(ch.to_ascii_uppercase());
+        previous_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+    }
+
+    output
 }

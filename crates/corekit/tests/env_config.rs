@@ -244,7 +244,7 @@ fn global_env_panics_with_collected_errors_when_lazy_load_fails() {
             let _ = corekit_global_invalid_env.COREKIT_GLOBAL_INVALID_PORT;
         }))
         .unwrap_err();
-        let message = panic_message(&panic);
+        let message = panic_message(panic.as_ref());
 
         assert!(message.contains("failed to load EnvConfig"));
         assert!(message.contains("COREKIT_GLOBAL_INVALID_PORT"));
