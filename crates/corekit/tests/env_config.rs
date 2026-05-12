@@ -81,6 +81,18 @@ struct DotenvEnv {
     corekit_dotenv_worker_count: u16,
 }
 
+#[derive(Debug, EnvConfig)]
+#[env_config(dotenv = ".env.test")]
+struct CustomDotenvEnv {
+    corekit_custom_dotenv_database_url: String,
+}
+
+#[derive(Debug, EnvConfig)]
+#[env_config(dotenv = false)]
+struct DisabledDotenvEnv {
+    corekit_disabled_dotenv_database_url: String,
+}
+
 #[test]
 fn load_reads_required_primitive_fields_from_screaming_snake_case_env_names() {
     with_env(
@@ -414,6 +426,56 @@ fn process_env_values_override_dotenv_values() {
     );
 }
 
+#[test]
+fn custom_dotenv_filename_is_loaded_when_configured() {
+    with_env(&[("COREKIT_CUSTOM_DOTENV_DATABASE_URL", None)], || {
+        with_dotenv_file(".env.test", "COREKIT_CUSTOM_DOTENV_DATABASE_URL=postgres://custom-dotenv\n", || {
+            let config = CustomDotenvEnv::load().unwrap();
+
+            assert_eq!(config.corekit_custom_dotenv_database_url, "postgres://custom-dotenv");
+        });
+    });
+}
+
+#[test]
+fn default_dotenv_file_is_not_loaded_when_custom_dotenv_filename_is_configured() {
+    with_env(&[("COREKIT_CUSTOM_DOTENV_DATABASE_URL", None)], || {
+        with_dotenv("COREKIT_CUSTOM_DOTENV_DATABASE_URL=postgres://default-dotenv\n", || {
+            let error = CustomDotenvEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].name(), "COREKIT_CUSTOM_DOTENV_DATABASE_URL");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Missing);
+        });
+    });
+}
+
+#[test]
+fn dotenv_loading_can_be_disabled() {
+    with_env(&[("COREKIT_DISABLED_DOTENV_DATABASE_URL", None)], || {
+        with_dotenv("COREKIT_DISABLED_DOTENV_DATABASE_URL=postgres://disabled-dotenv\n", || {
+            let error = DisabledDotenvEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].name(), "COREKIT_DISABLED_DOTENV_DATABASE_URL");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Missing);
+        });
+    });
+}
+
+#[test]
+fn process_env_values_still_work_when_dotenv_loading_is_disabled() {
+    with_env(&[("COREKIT_DISABLED_DOTENV_DATABASE_URL", Some("postgres://process"))], || {
+        with_dotenv("COREKIT_DISABLED_DOTENV_DATABASE_URL=postgres://disabled-dotenv\n", || {
+            let config = DisabledDotenvEnv::load().unwrap();
+
+            assert_eq!(config.corekit_disabled_dotenv_database_url, "postgres://process");
+        });
+    });
+}
+
 fn all_env_vars_absent() -> [(&'static str, Option<&'static str>); 5] {
     [
         ("COREKIT_TEST_SERVICE_URL", None),
@@ -464,9 +526,13 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 }
 
 fn with_dotenv(contents: &str, test: impl FnOnce()) {
+    with_dotenv_file(".env", contents, test);
+}
+
+fn with_dotenv_file(filename: &str, contents: &str, test: impl FnOnce()) {
     let dir = unique_temp_dir();
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join(".env"), contents).unwrap();
+    fs::write(dir.join(filename), contents).unwrap();
 
     let _guard = CurrentDirGuard::new(dir);
 
