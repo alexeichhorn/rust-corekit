@@ -9,3 +9,11 @@ readme = "../../README.md"
 
 [dependencies]
 corekit-macros.workspace = true
+
+[dev-dependencies]
+ui_test = "0.30.5"
+
+[[test]]
+name = "singleton_ui"
+path = "tests/singleton_ui.rs"
+harness = false
