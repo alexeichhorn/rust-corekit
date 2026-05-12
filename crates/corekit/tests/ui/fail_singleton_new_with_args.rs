@@ -1,8 +1,7 @@
 use corekit::singleton;
 
-#[singleton]
+#[singleton] //~ ERROR: this function takes 1 argument but 0 arguments were supplied
 struct NeedsArgument;
-//~^ ERROR: this function takes 1 argument but 0 arguments were supplied
 
 impl NeedsArgument {
     fn new(_name: &str) -> Self {
