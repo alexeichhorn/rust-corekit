@@ -22,3 +22,8 @@ harness = false
 name = "secret_string_ui"
 path = "tests/secret_string_ui.rs"
 harness = false
+
+[[test]]
+name = "env_config_ui"
+path = "tests/env_config_ui.rs"
+harness = false

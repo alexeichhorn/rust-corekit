@@ -1,0 +1,311 @@
+use std::env;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Mutex;
+
+use corekit::prelude::*;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, EnvConfig)]
+struct RequiredPrimitives {
+    corekit_test_service_url: String,
+    corekit_test_worker_count: u16,
+    corekit_test_signed_limit: i32,
+    corekit_test_feature_enabled: bool,
+    corekit_test_ratio: f64,
+}
+
+#[derive(Debug, EnvConfig)]
+#[allow(non_snake_case)]
+struct UppercaseRequiredPrimitives {
+    COREKIT_UPPER_DATABASE_URL: String,
+    COREKIT_UPPER_WORKER_COUNT: u16,
+}
+
+#[derive(Debug, EnvConfig)]
+struct CustomNameEnv {
+    #[env(name = "COREKIT_CUSTOM_DATABASE_URL")]
+    database_url: String,
+}
+
+#[derive(Debug, EnvConfig)]
+#[env_config(global = corekit_global_env)]
+#[allow(non_snake_case)]
+struct GlobalEnv {
+    COREKIT_GLOBAL_DATABASE_URL: String,
+    COREKIT_GLOBAL_OPENAI_API_KEY: SecretString,
+    COREKIT_GLOBAL_DEV_MODE: bool,
+    COREKIT_GLOBAL_WORKER_COUNT: u16,
+}
+
+#[derive(Debug, EnvConfig)]
+#[env_config(global = corekit_global_once_env)]
+#[allow(non_snake_case)]
+struct GlobalOnceEnv {
+    COREKIT_GLOBAL_ONCE_DATABASE_URL: String,
+}
+
+#[derive(Debug, EnvConfig)]
+#[env_config(global = corekit_global_invalid_env)]
+#[allow(non_snake_case)]
+struct GlobalInvalidEnv {
+    COREKIT_GLOBAL_INVALID_PORT: u16,
+}
+
+#[test]
+fn load_reads_required_primitive_fields_from_screaming_snake_case_env_names() {
+    with_env(
+        &[
+            ("COREKIT_TEST_SERVICE_URL", Some("https://example.com")),
+            ("COREKIT_TEST_WORKER_COUNT", Some("12")),
+            ("COREKIT_TEST_SIGNED_LIMIT", Some("-7")),
+            ("COREKIT_TEST_FEATURE_ENABLED", Some("true")),
+            ("COREKIT_TEST_RATIO", Some("0.75")),
+        ],
+        || {
+            let config = RequiredPrimitives::load().unwrap();
+
+            assert_eq!(config.corekit_test_service_url, "https://example.com");
+            assert_eq!(config.corekit_test_worker_count, 12);
+            assert_eq!(config.corekit_test_signed_limit, -7);
+            assert!(config.corekit_test_feature_enabled);
+            assert_eq!(config.corekit_test_ratio, 0.75);
+        },
+    );
+}
+
+#[test]
+fn uppercase_fields_map_to_the_same_uppercase_env_names() {
+    with_env(
+        &[
+            ("COREKIT_UPPER_DATABASE_URL", Some("postgres://upper")),
+            ("COREKIT_UPPER_WORKER_COUNT", Some("3")),
+        ],
+        || {
+            let config = UppercaseRequiredPrimitives::load().unwrap();
+
+            assert_eq!(config.COREKIT_UPPER_DATABASE_URL, "postgres://upper");
+            assert_eq!(config.COREKIT_UPPER_WORKER_COUNT, 3);
+        },
+    );
+}
+
+#[test]
+fn env_name_attribute_overrides_the_default_field_mapping() {
+    with_env(&[("COREKIT_CUSTOM_DATABASE_URL", Some("postgres://custom"))], || {
+        let config = CustomNameEnv::load().unwrap();
+
+        assert_eq!(config.database_url, "postgres://custom");
+    });
+}
+
+#[test]
+fn treats_empty_string_as_present_for_required_string_fields() {
+    with_env(
+        &[
+            ("COREKIT_TEST_SERVICE_URL", Some("")),
+            ("COREKIT_TEST_WORKER_COUNT", Some("1")),
+            ("COREKIT_TEST_SIGNED_LIMIT", Some("0")),
+            ("COREKIT_TEST_FEATURE_ENABLED", Some("false")),
+            ("COREKIT_TEST_RATIO", Some("1.0")),
+        ],
+        || {
+            let config = RequiredPrimitives::load().unwrap();
+
+            assert_eq!(config.corekit_test_service_url, "");
+            assert!(!config.corekit_test_feature_enabled);
+        },
+    );
+}
+
+#[test]
+fn collects_all_missing_required_env_vars_in_field_order() {
+    with_env(&all_env_vars_absent(), || {
+        let error = RequiredPrimitives::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 5);
+        assert_eq!(errors[0].name(), "COREKIT_TEST_SERVICE_URL");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Missing);
+        assert_eq!(errors[1].name(), "COREKIT_TEST_WORKER_COUNT");
+        assert_eq!(errors[1].kind(), EnvErrorKind::Missing);
+        assert_eq!(errors[2].name(), "COREKIT_TEST_SIGNED_LIMIT");
+        assert_eq!(errors[2].kind(), EnvErrorKind::Missing);
+        assert_eq!(errors[3].name(), "COREKIT_TEST_FEATURE_ENABLED");
+        assert_eq!(errors[3].kind(), EnvErrorKind::Missing);
+        assert_eq!(errors[4].name(), "COREKIT_TEST_RATIO");
+        assert_eq!(errors[4].kind(), EnvErrorKind::Missing);
+    });
+}
+
+#[test]
+fn collects_all_invalid_required_values_in_field_order() {
+    with_env(
+        &[
+            ("COREKIT_TEST_SERVICE_URL", Some("https://example.com")),
+            ("COREKIT_TEST_WORKER_COUNT", Some("-1")),
+            ("COREKIT_TEST_SIGNED_LIMIT", Some("not-an-int")),
+            ("COREKIT_TEST_FEATURE_ENABLED", Some("yes")),
+            ("COREKIT_TEST_RATIO", Some("not-a-float")),
+        ],
+        || {
+            let error = RequiredPrimitives::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 4);
+            assert_eq!(errors[0].name(), "COREKIT_TEST_WORKER_COUNT");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[1].name(), "COREKIT_TEST_SIGNED_LIMIT");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[2].name(), "COREKIT_TEST_FEATURE_ENABLED");
+            assert_eq!(errors[2].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[3].name(), "COREKIT_TEST_RATIO");
+            assert_eq!(errors[3].kind(), EnvErrorKind::Invalid);
+        },
+    );
+}
+
+#[test]
+fn reports_missing_and_invalid_values_together() {
+    with_env(
+        &[
+            ("COREKIT_TEST_SERVICE_URL", None),
+            ("COREKIT_TEST_WORKER_COUNT", Some("not-a-u16")),
+            ("COREKIT_TEST_SIGNED_LIMIT", Some("10")),
+            ("COREKIT_TEST_FEATURE_ENABLED", None),
+            ("COREKIT_TEST_RATIO", Some("2.5")),
+        ],
+        || {
+            let error = RequiredPrimitives::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 3);
+            assert_eq!(errors[0].name(), "COREKIT_TEST_SERVICE_URL");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Missing);
+            assert_eq!(errors[1].name(), "COREKIT_TEST_WORKER_COUNT");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[2].name(), "COREKIT_TEST_FEATURE_ENABLED");
+            assert_eq!(errors[2].kind(), EnvErrorKind::Missing);
+        },
+    );
+}
+
+#[test]
+fn error_display_lists_all_failed_env_var_names() {
+    with_env(&all_env_vars_absent(), || {
+        let message = RequiredPrimitives::load().unwrap_err().to_string();
+
+        assert!(message.contains("COREKIT_TEST_SERVICE_URL"));
+        assert!(message.contains("COREKIT_TEST_WORKER_COUNT"));
+        assert!(message.contains("COREKIT_TEST_SIGNED_LIMIT"));
+        assert!(message.contains("COREKIT_TEST_FEATURE_ENABLED"));
+        assert!(message.contains("COREKIT_TEST_RATIO"));
+    });
+}
+
+#[test]
+fn global_env_can_be_read_with_field_access() {
+    with_env(
+        &[
+            ("COREKIT_GLOBAL_DATABASE_URL", Some("postgres://global")),
+            ("COREKIT_GLOBAL_OPENAI_API_KEY", Some("sk-global-secret")),
+            ("COREKIT_GLOBAL_DEV_MODE", Some("true")),
+            ("COREKIT_GLOBAL_WORKER_COUNT", Some("8")),
+        ],
+        || {
+            let database_url: &str = corekit_global_env.COREKIT_GLOBAL_DATABASE_URL.as_str();
+            let openai_api_key: &str = corekit_global_env.COREKIT_GLOBAL_OPENAI_API_KEY.expose();
+            let dev_mode: bool = corekit_global_env.COREKIT_GLOBAL_DEV_MODE;
+            let worker_count: u16 = corekit_global_env.COREKIT_GLOBAL_WORKER_COUNT;
+
+            assert_eq!(database_url, "postgres://global");
+            assert_eq!(openai_api_key, "sk-global-secret");
+            assert!(dev_mode);
+            assert_eq!(worker_count, 8);
+        },
+    );
+}
+
+#[test]
+fn global_env_is_loaded_only_once_on_first_access() {
+    with_env(&[("COREKIT_GLOBAL_ONCE_DATABASE_URL", Some("postgres://first"))], || {
+        assert_eq!(corekit_global_once_env.COREKIT_GLOBAL_ONCE_DATABASE_URL, "postgres://first");
+
+        env::set_var("COREKIT_GLOBAL_ONCE_DATABASE_URL", "postgres://second");
+
+        assert_eq!(corekit_global_once_env.COREKIT_GLOBAL_ONCE_DATABASE_URL, "postgres://first");
+    });
+}
+
+#[test]
+fn global_env_panics_with_collected_errors_when_lazy_load_fails() {
+    with_env(&[("COREKIT_GLOBAL_INVALID_PORT", Some("not-a-port"))], || {
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let _ = corekit_global_invalid_env.COREKIT_GLOBAL_INVALID_PORT;
+        }))
+        .unwrap_err();
+        let message = panic_message(&panic);
+
+        assert!(message.contains("failed to load EnvConfig"));
+        assert!(message.contains("COREKIT_GLOBAL_INVALID_PORT"));
+    });
+}
+
+fn all_env_vars_absent() -> [(&'static str, Option<&'static str>); 5] {
+    [
+        ("COREKIT_TEST_SERVICE_URL", None),
+        ("COREKIT_TEST_WORKER_COUNT", None),
+        ("COREKIT_TEST_SIGNED_LIMIT", None),
+        ("COREKIT_TEST_FEATURE_ENABLED", None),
+        ("COREKIT_TEST_RATIO", None),
+    ]
+}
+
+fn with_env(vars: &[(&'static str, Option<&'static str>)], test: impl FnOnce()) {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::new(vars);
+
+    test();
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<String>() {
+        return message.clone();
+    }
+
+    if let Some(message) = panic.downcast_ref::<&'static str>() {
+        return (*message).to_owned();
+    }
+
+    String::new()
+}
+
+struct EnvGuard {
+    saved: Vec<(&'static str, Option<String>)>,
+}
+
+impl EnvGuard {
+    fn new(vars: &[(&'static str, Option<&'static str>)]) -> Self {
+        let saved = vars.iter().map(|(name, _)| (*name, env::var(name).ok())).collect();
+
+        for (name, value) in vars {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+
+        Self { saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (name, value) in self.saved.drain(..) {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+    }
+}

@@ -36,35 +36,29 @@ use corekit::prelude::*;
 Example:
 
 ```rust
+use corekit::prelude::*;
+
 #[derive(Debug, Clone, EnvConfig)]
+#[env_config(global = env)]
+#[allow(non_snake_case)]
 pub struct Env {
-    pub db_url: String,
-
-    #[env(default = 90)]
-    pub video_max_duration_s: u64,
-
-    #[env(optional)]
-    pub sentry_dsn: Option<String>,
-
-    pub openai_api_key: SecretString,
+    pub DATABASE_URL: String,
+    pub OPENAI_API_KEY: SecretString,
+    pub DEV_MODE: bool,
 }
 
 #[singleton]
-pub struct UserService {
-    cache: RwLock<HashMap<UserId, User>>,
-}
+pub struct UserService;
 
 impl UserService {
     fn new() -> Self {
-        Self {
-            cache: RwLock::new(HashMap::new()),
-        }
+        Self
     }
 
-    #[retry(max_retries = 3, initial_delay = "500ms", max_delay = "5s")]
-    #[timeout("10s")]
     pub async fn create_user(&self, input: CreateUser) -> Result<User, UserError> {
-        todo!()
+        let database_url = env.DATABASE_URL.as_str();
+        let openai_key = env.OPENAI_API_KEY.expose();
+        todo!("use input, database_url, and openai_key")
     }
 }
 ```
@@ -72,8 +66,6 @@ impl UserService {
 Usage:
 
 ```rust
-let env = Env::load()?;
-
 let user = UserService::shared()
     .create_user(input)
     .await?;
@@ -150,42 +142,44 @@ Do not hold a blocking lock guard across `.await`.
 
 ## User-facing goal
 
-Replace Python-style `env.py` files with one typed Rust struct that loads and validates all required environment variables at startup.
+Replace Python-style `env.py` files with one typed Rust struct that can be accessed globally without passing config through every service constructor.
 
 ```rust
 #[derive(Debug, Clone, EnvConfig)]
+#[env_config(global = env)]
+#[allow(non_snake_case)]
 pub struct Env {
-    pub db_url: String,
-    pub redis_port: u16,
-
-    #[env(default = false)]
-    pub dev_mode: bool,
-
-    #[env(optional)]
-    pub sentry_dsn: Option<String>,
-
-    pub openai_api_key: SecretString,
+    pub DATABASE_URL: String,
+    pub REDIS_PORT: u16,
+    pub DEV_MODE: bool,
+    pub OPENAI_API_KEY: SecretString,
 }
 ```
 
-Startup:
+Normal app usage:
 
 ```rust
-let env = Env::load()?;
+let db_url = env.DATABASE_URL.as_str();
+let openai_key = env.OPENAI_API_KEY.expose();
+
+if env.DEV_MODE {
+    // development behavior
+}
 ```
 
-After that, env values are normal typed fields:
+For tests/tools, the macro also generates an explicit loader:
 
 ```rust
-env.db_url
-env.redis_port
-env.openai_api_key
+let env_value = Env::load()?;
 ```
 
 ## Requirements
 
-- Required env vars fail during startup if missing.
-- Invalid values fail during startup.
+- With `#[env_config(global = env)]`, first access to `env.FIELD` lazily loads and validates all env vars.
+- If global lazy loading fails, it panics with all collected env errors.
+- `Env::load()` returns `Result<Self, EnvError>` and does not touch the global instance.
+- Required env vars fail if missing.
+- Invalid values fail.
 - Errors should be collected and shown together.
 - Fields are type-safe.
 - Defaults are simple.
@@ -194,7 +188,7 @@ env.openai_api_key
 
 ## Field mapping
 
-By default, field names map to screaming snake case:
+By default, snake-case field names map to screaming snake case:
 
 ```rust
 pub db_url: String,
@@ -206,6 +200,23 @@ maps to:
 ```text
 DB_URL
 REDIS_PORT
+```
+
+Uppercase field names map to themselves, so no double definition is needed:
+
+```rust
+#[allow(non_snake_case)]
+pub struct Env {
+    pub DATABASE_URL: String,
+    pub OPENAI_API_KEY: SecretString,
+}
+```
+
+maps to:
+
+```text
+DATABASE_URL
+OPENAI_API_KEY
 ```
 
 Custom env name:
@@ -261,7 +272,7 @@ Later possible additions:
 Add a `SecretString` type.
 
 ```rust
-pub openai_api_key: SecretString,
+pub OPENAI_API_KEY: SecretString,
 ```
 
 `Debug` output should be redacted.
@@ -269,12 +280,12 @@ pub openai_api_key: SecretString,
 Access should be explicit:
 
 ```rust
-env.openai_api_key.expose()
+env.OPENAI_API_KEY.expose()
 ```
 
 ## Implementation note
 
-The macro should generate an inherent method:
+The macro should generate an inherent loader:
 
 ```rust
 impl Env {
@@ -282,6 +293,15 @@ impl Env {
         todo!()
     }
 }
+```
+
+When `#[env_config(global = env)]` is present, it should also generate a lazy global value:
+
+```rust
+#[allow(non_upper_case_globals)]
+pub static env: std::sync::LazyLock<Env> = std::sync::LazyLock::new(|| {
+    Env::load().expect("failed to load EnvConfig")
+});
 ```
 
 Simple v1 dotenv behavior is enough:
@@ -494,4 +514,3 @@ Do not design this in v1.
 - a large dependency-heavy kitchen sink
 
 It should stay a small ergonomics layer for code we repeatedly write across backend projects.
-
