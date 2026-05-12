@@ -1,10 +1,15 @@
 use std::env;
+use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
+use std::process;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use corekit::prelude::*;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+static TEMP_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, EnvConfig)]
 struct RequiredPrimitives {
@@ -50,6 +55,30 @@ struct GlobalOnceEnv {
 #[allow(non_snake_case)]
 struct GlobalInvalidEnv {
     COREKIT_GLOBAL_INVALID_PORT: u16,
+}
+
+#[derive(Debug, EnvConfig)]
+struct DefaultEnv {
+    #[env(default = 90)]
+    corekit_default_video_max_duration_s: u64,
+    #[env(default = false)]
+    corekit_default_dev_mode: bool,
+    #[env(default = "info")]
+    corekit_default_log_level: String,
+}
+
+#[derive(Debug, EnvConfig)]
+struct OptionalEnv {
+    corekit_optional_sentry_dsn: Option<String>,
+    corekit_optional_worker_count: Option<u16>,
+    #[env(optional)]
+    corekit_optional_feature_enabled: Option<bool>,
+}
+
+#[derive(Debug, EnvConfig)]
+struct DotenvEnv {
+    corekit_dotenv_database_url: String,
+    corekit_dotenv_worker_count: u16,
 }
 
 #[test]
@@ -251,6 +280,140 @@ fn global_env_panics_with_collected_errors_when_lazy_load_fails() {
     });
 }
 
+#[test]
+fn defaults_are_used_when_env_vars_are_missing() {
+    with_env(&all_default_env_vars_absent(), || {
+        let config = DefaultEnv::load().unwrap();
+
+        assert_eq!(config.corekit_default_video_max_duration_s, 90);
+        assert!(!config.corekit_default_dev_mode);
+        assert_eq!(config.corekit_default_log_level, "info");
+    });
+}
+
+#[test]
+fn env_values_override_defaults_when_present() {
+    with_env(
+        &[
+            ("COREKIT_DEFAULT_VIDEO_MAX_DURATION_S", Some("120")),
+            ("COREKIT_DEFAULT_DEV_MODE", Some("true")),
+            ("COREKIT_DEFAULT_LOG_LEVEL", Some("debug")),
+        ],
+        || {
+            let config = DefaultEnv::load().unwrap();
+
+            assert_eq!(config.corekit_default_video_max_duration_s, 120);
+            assert!(config.corekit_default_dev_mode);
+            assert_eq!(config.corekit_default_log_level, "debug");
+        },
+    );
+}
+
+#[test]
+fn present_invalid_values_fail_even_when_defaults_exist() {
+    with_env(
+        &[
+            ("COREKIT_DEFAULT_VIDEO_MAX_DURATION_S", Some("not-a-duration")),
+            ("COREKIT_DEFAULT_DEV_MODE", Some("true")),
+            ("COREKIT_DEFAULT_LOG_LEVEL", None),
+        ],
+        || {
+            let error = DefaultEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].name(), "COREKIT_DEFAULT_VIDEO_MAX_DURATION_S");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+        },
+    );
+}
+
+#[test]
+fn missing_option_fields_load_as_none() {
+    with_env(&all_optional_env_vars_absent(), || {
+        let config = OptionalEnv::load().unwrap();
+
+        assert_eq!(config.corekit_optional_sentry_dsn, None);
+        assert_eq!(config.corekit_optional_worker_count, None);
+        assert_eq!(config.corekit_optional_feature_enabled, None);
+    });
+}
+
+#[test]
+fn present_option_fields_load_as_some_values() {
+    with_env(
+        &[
+            ("COREKIT_OPTIONAL_SENTRY_DSN", Some("https://sentry.example")),
+            ("COREKIT_OPTIONAL_WORKER_COUNT", Some("7")),
+            ("COREKIT_OPTIONAL_FEATURE_ENABLED", Some("true")),
+        ],
+        || {
+            let config = OptionalEnv::load().unwrap();
+
+            assert_eq!(config.corekit_optional_sentry_dsn.as_deref(), Some("https://sentry.example"));
+            assert_eq!(config.corekit_optional_worker_count, Some(7));
+            assert_eq!(config.corekit_optional_feature_enabled, Some(true));
+        },
+    );
+}
+
+#[test]
+fn present_invalid_option_values_fail() {
+    with_env(
+        &[
+            ("COREKIT_OPTIONAL_SENTRY_DSN", None),
+            ("COREKIT_OPTIONAL_WORKER_COUNT", Some("not-a-u16")),
+            ("COREKIT_OPTIONAL_FEATURE_ENABLED", Some("yes")),
+        ],
+        || {
+            let error = OptionalEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 2);
+            assert_eq!(errors[0].name(), "COREKIT_OPTIONAL_WORKER_COUNT");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[1].name(), "COREKIT_OPTIONAL_FEATURE_ENABLED");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+        },
+    );
+}
+
+#[test]
+fn load_reads_values_from_dotenv_file() {
+    with_env(&all_dotenv_env_vars_absent(), || {
+        with_dotenv(
+            "COREKIT_DOTENV_DATABASE_URL=postgres://dotenv\nCOREKIT_DOTENV_WORKER_COUNT=4\n",
+            || {
+                let config = DotenvEnv::load().unwrap();
+
+                assert_eq!(config.corekit_dotenv_database_url, "postgres://dotenv");
+                assert_eq!(config.corekit_dotenv_worker_count, 4);
+            },
+        );
+    });
+}
+
+#[test]
+fn process_env_values_override_dotenv_values() {
+    with_env(
+        &[
+            ("COREKIT_DOTENV_DATABASE_URL", Some("postgres://process")),
+            ("COREKIT_DOTENV_WORKER_COUNT", None),
+        ],
+        || {
+            with_dotenv(
+                "COREKIT_DOTENV_DATABASE_URL=postgres://dotenv\nCOREKIT_DOTENV_WORKER_COUNT=4\n",
+                || {
+                    let config = DotenvEnv::load().unwrap();
+
+                    assert_eq!(config.corekit_dotenv_database_url, "postgres://process");
+                    assert_eq!(config.corekit_dotenv_worker_count, 4);
+                },
+            );
+        },
+    );
+}
+
 fn all_env_vars_absent() -> [(&'static str, Option<&'static str>); 5] {
     [
         ("COREKIT_TEST_SERVICE_URL", None),
@@ -259,6 +422,26 @@ fn all_env_vars_absent() -> [(&'static str, Option<&'static str>); 5] {
         ("COREKIT_TEST_FEATURE_ENABLED", None),
         ("COREKIT_TEST_RATIO", None),
     ]
+}
+
+fn all_default_env_vars_absent() -> [(&'static str, Option<&'static str>); 3] {
+    [
+        ("COREKIT_DEFAULT_VIDEO_MAX_DURATION_S", None),
+        ("COREKIT_DEFAULT_DEV_MODE", None),
+        ("COREKIT_DEFAULT_LOG_LEVEL", None),
+    ]
+}
+
+fn all_optional_env_vars_absent() -> [(&'static str, Option<&'static str>); 3] {
+    [
+        ("COREKIT_OPTIONAL_SENTRY_DSN", None),
+        ("COREKIT_OPTIONAL_WORKER_COUNT", None),
+        ("COREKIT_OPTIONAL_FEATURE_ENABLED", None),
+    ]
+}
+
+fn all_dotenv_env_vars_absent() -> [(&'static str, Option<&'static str>); 2] {
+    [("COREKIT_DOTENV_DATABASE_URL", None), ("COREKIT_DOTENV_WORKER_COUNT", None)]
 }
 
 fn with_env(vars: &[(&'static str, Option<&'static str>)], test: impl FnOnce()) {
@@ -278,6 +461,42 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     }
 
     String::new()
+}
+
+fn with_dotenv(contents: &str, test: impl FnOnce()) {
+    let dir = unique_temp_dir();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(".env"), contents).unwrap();
+
+    let _guard = CurrentDirGuard::new(dir);
+
+    test();
+}
+
+fn unique_temp_dir() -> PathBuf {
+    let index = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    env::temp_dir().join(format!("corekit-env-config-{}-{index}", process::id()))
+}
+
+struct CurrentDirGuard {
+    original: PathBuf,
+    temp: PathBuf,
+}
+
+impl CurrentDirGuard {
+    fn new(temp: PathBuf) -> Self {
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(&temp).unwrap();
+
+        Self { original, temp }
+    }
+}
+
+impl Drop for CurrentDirGuard {
+    fn drop(&mut self) {
+        env::set_current_dir(&self.original).unwrap();
+        fs::remove_dir_all(&self.temp).unwrap();
+    }
 }
 
 struct EnvGuard {
