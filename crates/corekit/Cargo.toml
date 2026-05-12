@@ -9,6 +9,7 @@ readme = "../../README.md"
 
 [dependencies]
 corekit-macros.workspace = true
+dotenvy = "0.15.7"
 
 [dev-dependencies]
 ui_test = "0.30.5"

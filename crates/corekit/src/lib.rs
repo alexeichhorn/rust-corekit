@@ -10,3 +10,8 @@ pub use secret_string::SecretString;
 pub mod prelude {
     pub use crate::*;
 }
+
+#[doc(hidden)]
+pub mod __private {
+    pub use dotenvy;
+}

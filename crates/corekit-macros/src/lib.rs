@@ -8,6 +8,7 @@ use syn::{
     parse_macro_input, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemStruct, Lit, Meta, Path, Token, Type,
     Visibility,
 };
+use syn::{GenericArgument, PathArguments};
 
 #[proc_macro_attribute]
 pub fn singleton(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -199,6 +200,21 @@ struct EnvField {
     ident: Ident,
     ty: Type,
     env_name: String,
+    mode: EnvFieldMode,
+}
+
+enum EnvFieldMode {
+    Required,
+    Default(Lit),
+    DefaultOption(Lit, Type),
+    Optional(Type),
+}
+
+#[derive(Default)]
+struct EnvFieldArgs {
+    name: Option<String>,
+    default: Option<Lit>,
+    optional: Option<Path>,
 }
 
 fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
@@ -210,20 +226,21 @@ fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
     let field_loads = fields.iter().enumerate().map(|(index, field)| {
         let binding = format_ident!("__corekit_env_field_{index}");
         let env_name = &field.env_name;
-        let ty = &field.ty;
+        let ty = field.parse_ty();
+        let present_value = field.present_value();
+        let missing_value = field.missing_value();
 
         quote! {
             let #binding = match ::std::env::var(#env_name) {
                 Ok(value) => match value.parse::<#ty>() {
-                    Ok(value) => Some(value),
+                    Ok(value) => Some(#present_value),
                     Err(_) => {
                         errors.push(::corekit::EnvVarError::invalid(#env_name));
                         None
                     }
                 },
                 Err(::std::env::VarError::NotPresent) => {
-                    errors.push(::corekit::EnvVarError::missing(#env_name));
-                    None
+                    #missing_value
                 }
                 Err(::std::env::VarError::NotUnicode(_)) => {
                     errors.push(::corekit::EnvVarError::invalid(#env_name));
@@ -247,6 +264,8 @@ fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
     Ok(quote! {
         impl #ident {
             pub fn load() -> ::std::result::Result<Self, ::corekit::EnvError> {
+                ::corekit::__private::dotenvy::dotenv().ok();
+
                 let mut errors = ::std::vec::Vec::new();
 
                 #(#field_loads)*
@@ -263,6 +282,64 @@ fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
 
         #global
     })
+}
+
+impl EnvField {
+    fn parse_ty(&self) -> &Type {
+        match &self.mode {
+            EnvFieldMode::Required | EnvFieldMode::Default(_) => &self.ty,
+            EnvFieldMode::DefaultOption(_, inner_ty) => inner_ty,
+            EnvFieldMode::Optional(inner_ty) => inner_ty,
+        }
+    }
+
+    fn present_value(&self) -> proc_macro2::TokenStream {
+        match &self.mode {
+            EnvFieldMode::Required | EnvFieldMode::Default(_) => quote! { value },
+            EnvFieldMode::DefaultOption(_, _) => quote! { ::std::option::Option::Some(value) },
+            EnvFieldMode::Optional(_) => quote! { ::std::option::Option::Some(value) },
+        }
+    }
+
+    fn missing_value(&self) -> proc_macro2::TokenStream {
+        let env_name = &self.env_name;
+
+        match &self.mode {
+            EnvFieldMode::Required => {
+                quote! {
+                    errors.push(::corekit::EnvVarError::missing(#env_name));
+                    None
+                }
+            }
+            EnvFieldMode::Default(default) => {
+                let ty = &self.ty;
+
+                quote! {
+                    match #default.to_string().parse::<#ty>() {
+                        Ok(value) => Some(value),
+                        Err(_) => {
+                            errors.push(::corekit::EnvVarError::invalid(#env_name));
+                            None
+                        }
+                    }
+                }
+            }
+            EnvFieldMode::DefaultOption(default, inner_ty) => {
+                quote! {
+                    match #default.to_string().parse::<#inner_ty>() {
+                        Ok(value) => Some(::std::option::Option::Some(value)),
+                        Err(_) => {
+                            errors.push(::corekit::EnvVarError::invalid(#env_name));
+                            None
+                        }
+                    }
+                }
+            }
+            EnvFieldMode::Optional(_) => quote! {
+                Some(::std::option::Option::None)
+            },
+        }
+    }
 }
 
 fn expand_env_global(vis: &Visibility, env_ident: &Ident, global_ident: &Ident) -> proc_macro2::TokenStream {
@@ -333,19 +410,40 @@ fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
         .iter()
         .map(|field| {
             let ident = field.ident.clone().expect("named field has an identifier");
-            let env_name = parse_env_name(field, &ident)?;
+            let args = parse_env_field_args(field)?;
+            let env_name = args.name.unwrap_or_else(|| env_name_from_field_ident(&ident));
+            let option_inner_ty = option_inner_ty(&field.ty);
+            let mode = match (args.default, args.optional, option_inner_ty) {
+                (Some(default), None, None) => EnvFieldMode::Default(default),
+                (Some(default), None, Some(inner_ty)) => EnvFieldMode::DefaultOption(default, inner_ty),
+                (None, Some(_), Some(inner_ty)) | (None, None, Some(inner_ty)) => EnvFieldMode::Optional(inner_ty),
+                (None, Some(optional), None) => {
+                    return Err(syn::Error::new_spanned(
+                        optional,
+                        "`#[env(optional)]` requires an `Option<T>` field",
+                    ));
+                }
+                (Some(_), Some(optional), _) => {
+                    return Err(syn::Error::new_spanned(
+                        optional,
+                        "`#[env(optional)]` cannot be combined with `#[env(default = ...)]`",
+                    ));
+                }
+                (None, None, None) => EnvFieldMode::Required,
+            };
 
             Ok(EnvField {
                 ident,
                 ty: field.ty.clone(),
                 env_name,
+                mode,
             })
         })
         .collect()
 }
 
-fn parse_env_name(field: &syn::Field, ident: &Ident) -> syn::Result<String> {
-    let mut name = None;
+fn parse_env_field_args(field: &syn::Field) -> syn::Result<EnvFieldArgs> {
+    let mut args = EnvFieldArgs::default();
 
     for attr in &field.attrs {
         if !attr.path().is_ident("env") {
@@ -362,7 +460,19 @@ fn parse_env_name(field: &syn::Field, ident: &Ident) -> syn::Result<String> {
                             return Err(syn::Error::new_spanned(other, "`#[env(name = ...)]` expects a string literal"));
                         }
                     };
-                    name = Some(value.value());
+                    args.name = Some(value.value());
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("default") => {
+                    let value = match name_value.value {
+                        Expr::Lit(ExprLit { lit, .. }) => lit,
+                        other => {
+                            return Err(syn::Error::new_spanned(other, "`#[env(default = ...)]` expects a literal"));
+                        }
+                    };
+                    args.default = Some(value);
+                }
+                Meta::Path(path) if path.is_ident("optional") => {
+                    args.optional = Some(path);
                 }
                 other => {
                     return Err(syn::Error::new_spanned(other, "unsupported `#[env]` argument"));
@@ -371,7 +481,28 @@ fn parse_env_name(field: &syn::Field, ident: &Ident) -> syn::Result<String> {
         }
     }
 
-    Ok(name.unwrap_or_else(|| env_name_from_field_ident(ident)))
+    Ok(args)
+}
+
+fn option_inner_ty(ty: &Type) -> Option<Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
+    }
+
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+
+    let Some(GenericArgument::Type(inner_ty)) = args.args.first() else {
+        return None;
+    };
+
+    Some(inner_ty.clone())
 }
 
 fn env_name_from_field_ident(ident: &Ident) -> String {
