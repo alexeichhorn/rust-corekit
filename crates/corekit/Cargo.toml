@@ -17,3 +17,8 @@ ui_test = "0.30.5"
 name = "singleton_ui"
 path = "tests/singleton_ui.rs"
 harness = false
+
+[[test]]
+name = "secret_string_ui"
+path = "tests/secret_string_ui.rs"
+harness = false
