@@ -2,6 +2,118 @@
 
 Small Rust ergonomics library for backend projects.
 
+## Usage
+
+Import the common API from the prelude:
+
+```rust
+use corekit::prelude::*;
+```
+
+## EnvConfig
+
+Use `#[derive(EnvConfig)]` for typed environment config. Add `#[env_config(global = env)]` if you want global field-style access.
+
+```rust
+use corekit::prelude::*;
+
+#[derive(Debug, Clone, EnvConfig)]
+#[env_config(global = env)]
+#[allow(non_snake_case)]
+pub struct Env {
+    pub DATABASE_URL: String,
+    pub OPENAI_API_KEY: SecretString,
+    pub DEV_MODE: bool,
+
+    #[env(default = 10)]
+    pub WORKER_COUNT: u16,
+
+    pub SENTRY_DSN: Option<String>,
+}
+
+let database_url = env.DATABASE_URL.as_str();
+let openai_key = env.OPENAI_API_KEY.expose();
+let worker_count = env.WORKER_COUNT;
+```
+
+Example `.env`:
+
+```dotenv
+DATABASE_URL=postgres://localhost/app
+OPENAI_API_KEY=sk-test
+DEV_MODE=true
+WORKER_COUNT=4
+```
+
+`Env::load()` is also generated for tests and tools:
+
+```rust
+let env_value = Env::load()?;
+```
+
+Behavior:
+
+- `.env` is loaded automatically before reading `std::env`.
+- Process env vars win over values from `.env`.
+- Missing required vars fail.
+- Invalid values fail.
+- Errors are collected together.
+- First access to the generated global lazily loads the env config.
+- Failed global loading panics with the collected env errors.
+
+Field names:
+
+```rust
+pub database_url: String, // reads DATABASE_URL
+pub DATABASE_URL: String, // reads DATABASE_URL
+
+#[env(name = "DATABASE_URL")]
+pub db_url: String,
+```
+
+Defaults:
+
+```rust
+#[env(default = 90)]
+pub video_max_duration_s: u64,
+
+#[env(default = false)]
+pub dev_mode: bool,
+
+#[env(default = "info")]
+pub log_level: String,
+```
+
+Optional values:
+
+```rust
+pub sentry_dsn: Option<String>,
+
+#[env(optional)]
+pub redis_url: Option<String>,
+```
+
+Supported value types:
+
+- `String`
+- `bool`
+- integer and float types
+- `Option<T>`
+- custom types implementing `FromStr`
+- `SecretString`
+
+## SecretString
+
+Use `SecretString` for secrets that should not be printed accidentally.
+
+```rust
+let secret = SecretString::from("sk-test");
+
+assert_eq!(secret.expose(), "sk-test");
+assert_eq!(format!("{secret:?}"), "SecretString([redacted])");
+assert_eq!(secret.to_string(), "[redacted]");
+```
+
 ## Singleton
 
 Use `#[singleton]` to generate a process-wide `shared()` accessor backed by `std::sync::LazyLock`.
@@ -33,3 +145,5 @@ Supported init forms:
 #[singleton(default)]                // Type::default()
 #[singleton(init = UserService::new)] // custom zero-arg constructor
 ```
+
+For mutable singleton state, use safe interior mutability like `Mutex`, `RwLock`, or atomics. Do not hold a blocking lock guard across `.await`.
