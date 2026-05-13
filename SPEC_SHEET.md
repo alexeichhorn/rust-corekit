@@ -42,21 +42,30 @@ use corekit::prelude::*;
 pub struct Env {
     pub DATABASE_URL: String,
     pub OPENAI_API_KEY: SecretString,
+    #[env(default = 30)]
+    pub REQUEST_TIMEOUT_SECONDS: u64,
     pub DEV_MODE: bool,
 }
 
 #[singleton]
-pub struct UserService;
+pub struct UserService {
+    http_client: reqwest::Client,
+    openai_client: OpenAIClient,
+}
 
 impl UserService {
     fn new() -> Self {
-        Self
+        Self {
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(env.REQUEST_TIMEOUT_SECONDS))
+                .build()
+                .expect("failed to build reqwest client"),
+            openai_client: OpenAIClient::new(env.OPENAI_API_KEY.expose()),
+        }
     }
 
     pub async fn create_user(&self, input: CreateUser) -> Result<User, UserError> {
-        let database_url = env.DATABASE_URL.as_str();
-        let openai_key = env.OPENAI_API_KEY.expose();
-        todo!("use input, database_url, and openai_key")
+        todo!("use input and the configured service state")
     }
 }
 ```
