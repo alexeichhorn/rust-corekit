@@ -35,7 +35,24 @@ pub fn singleton(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn env_config(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemStruct);
+    let original_item = proc_macro2::TokenStream::from(item.clone());
+    let parsed_item = match syn::parse::<Item>(item) {
+        Ok(item) => item,
+        Err(error) => return error.into_compile_error().into(),
+    };
+
+    let input = match parsed_item {
+        Item::Struct(input) => input,
+        _ => {
+            let error = env_config_attribute_error("`#[env_config]` can only be used on structs with named fields");
+            return quote! {
+                #original_item
+                #error
+            }
+            .into();
+        }
+    };
+
     let args = match parse_env_config_attr(proc_macro2::TokenStream::from(attr)) {
         Ok(args) => args,
         Err(error) => {
@@ -47,6 +64,24 @@ pub fn env_config(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
         }
     };
+
+    if !matches!(input.fields, Fields::Named(_)) {
+        let error = env_config_attribute_error("`#[env_config]` can only be used on structs with named fields");
+        return quote! {
+            #input
+            #error
+        }
+        .into();
+    }
+
+    if has_generics(&input.generics) {
+        let error = env_config_attribute_error("`#[env_config]` does not support generic structs");
+        return quote! {
+            #input
+            #error
+        }
+        .into();
+    }
 
     match expand_env_config_attribute(args, input) {
         Ok(tokens) => tokens.into(),
@@ -172,9 +207,7 @@ fn expand_singleton(args: SingletonArgs, item: Item, original_item: proc_macro2:
 }
 
 fn reject_generics(input: &ItemStruct) -> syn::Result<()> {
-    let Generics { params, where_clause, .. } = &input.generics;
-
-    if params.is_empty() && where_clause.is_none() {
+    if !has_generics(&input.generics) {
         return Ok(());
     }
 
@@ -182,6 +215,12 @@ fn reject_generics(input: &ItemStruct) -> syn::Result<()> {
         &input.ident,
         "`#[singleton]` does not support generic structs",
     ))
+}
+
+fn has_generics(generics: &Generics) -> bool {
+    let Generics { params, where_clause, .. } = generics;
+
+    !params.is_empty() || where_clause.is_some()
 }
 
 fn init_path(strategy: &InitStrategy, ident: &Ident) -> proc_macro2::TokenStream {
@@ -216,6 +255,7 @@ fn normalize_init_path(path: &mut Path, type_ident: &Ident) {
 struct EnvConfigArgs {
     global: Option<Ident>,
     dotenv: DotenvMode,
+    has_dotenv: bool,
 }
 
 enum DotenvMode {
@@ -301,6 +341,8 @@ fn strip_env_field_attrs(input: &mut ItemStruct) {
 }
 
 fn expand_env_config_impl(input: &DeriveInput, args: EnvConfigArgs) -> syn::Result<proc_macro2::TokenStream> {
+    reject_env_config_generics(input)?;
+
     let fields = parse_env_fields(&input)?;
     let ident = &input.ident;
     let vis = &input.vis;
@@ -365,6 +407,21 @@ fn expand_env_config_impl(input: &DeriveInput, args: EnvConfigArgs) -> syn::Resu
 
         #global
     })
+}
+
+fn env_config_attribute_error(message: &str) -> proc_macro2::TokenStream {
+    syn::Error::new(proc_macro2::Span::call_site(), message).into_compile_error()
+}
+
+fn reject_env_config_generics(input: &DeriveInput) -> syn::Result<()> {
+    if !has_generics(&input.generics) {
+        return Ok(());
+    }
+
+    Err(syn::Error::new_spanned(
+        &input.ident,
+        "`EnvConfig` does not support generic structs",
+    ))
 }
 
 fn expand_dotenv_load(mode: &DotenvMode) -> proc_macro2::TokenStream {
@@ -480,6 +537,13 @@ fn parse_env_config_attr(attr: proc_macro2::TokenStream) -> syn::Result<EnvConfi
 fn parse_env_config_meta(args: &mut EnvConfigArgs, meta: Meta) -> syn::Result<()> {
     match meta {
         Meta::NameValue(name_value) if name_value.path.is_ident("global") => {
+            if args.global.is_some() {
+                return Err(syn::Error::new_spanned(
+                    name_value,
+                    "duplicate `#[env_config(global = ...)]` argument",
+                ));
+            }
+
             let ident = match name_value.value {
                 Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => path.segments[0].ident.clone(),
                 other => {
@@ -492,6 +556,13 @@ fn parse_env_config_meta(args: &mut EnvConfigArgs, meta: Meta) -> syn::Result<()
             args.global = Some(ident);
         }
         Meta::NameValue(name_value) if name_value.path.is_ident("dotenv") => {
+            if args.has_dotenv {
+                return Err(syn::Error::new_spanned(
+                    name_value,
+                    "duplicate `#[env_config(dotenv = ...)]` argument",
+                ));
+            }
+
             args.dotenv = match name_value.value {
                 Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) => DotenvMode::File(value.value()),
                 Expr::Lit(ExprLit { lit: Lit::Bool(value), .. }) if !value.value => DotenvMode::Disabled,
@@ -502,6 +573,7 @@ fn parse_env_config_meta(args: &mut EnvConfigArgs, meta: Meta) -> syn::Result<()
                     ));
                 }
             };
+            args.has_dotenv = true;
         }
         other => {
             return Err(syn::Error::new_spanned(other, "unsupported `#[env_config]` argument"));
