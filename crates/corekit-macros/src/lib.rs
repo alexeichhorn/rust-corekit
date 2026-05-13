@@ -2,7 +2,7 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::parse::{Parse, ParseStream};
+use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::{
     parse_macro_input, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemStruct, Lit, Meta, Path, Token, Type,
@@ -31,6 +31,27 @@ pub fn singleton(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expand_singleton(args, parsed_item, original_item).into()
+}
+
+#[proc_macro_attribute]
+pub fn env_config(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemStruct);
+    let args = match parse_env_config_attr(proc_macro2::TokenStream::from(attr)) {
+        Ok(args) => args,
+        Err(error) => {
+            let error = error.into_compile_error();
+            return quote! {
+                #input
+                #error
+            }
+            .into();
+        }
+    };
+
+    match expand_env_config_attribute(args, input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.into_compile_error().into(),
+    }
 }
 
 #[proc_macro_derive(EnvConfig, attributes(env_config, env))]
@@ -232,6 +253,54 @@ struct EnvFieldArgs {
 
 fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let args = parse_env_config_args(&input)?;
+    expand_env_config_impl(&input, args)
+}
+
+fn expand_env_config_attribute(args: EnvConfigArgs, input: ItemStruct) -> syn::Result<proc_macro2::TokenStream> {
+    let derive_input = derive_input_from_struct(&input);
+    let generated = expand_env_config_impl(&derive_input, args)?;
+    let mut emitted_input = input;
+    strip_env_field_attrs(&mut emitted_input);
+    emitted_input.attrs.push(syn::parse_quote!(#[allow(non_snake_case)]));
+
+    Ok(quote! {
+        #emitted_input
+
+        #generated
+    })
+}
+
+fn derive_input_from_struct(input: &ItemStruct) -> DeriveInput {
+    DeriveInput {
+        attrs: input.attrs.clone(),
+        vis: input.vis.clone(),
+        ident: input.ident.clone(),
+        generics: input.generics.clone(),
+        data: Data::Struct(syn::DataStruct {
+            struct_token: input.struct_token,
+            fields: input.fields.clone(),
+            semi_token: input.semi_token,
+        }),
+    }
+}
+
+fn strip_env_field_attrs(input: &mut ItemStruct) {
+    match &mut input.fields {
+        Fields::Named(fields) => {
+            for field in fields.named.iter_mut() {
+                field.attrs.retain(|attr| !attr.path().is_ident("env"));
+            }
+        }
+        Fields::Unnamed(fields) => {
+            for field in fields.unnamed.iter_mut() {
+                field.attrs.retain(|attr| !attr.path().is_ident("env"));
+            }
+        }
+        Fields::Unit => {}
+    }
+}
+
+fn expand_env_config_impl(input: &DeriveInput, args: EnvConfigArgs) -> syn::Result<proc_macro2::TokenStream> {
     let fields = parse_env_fields(&input)?;
     let ident = &input.ident;
     let vis = &input.vis;
@@ -390,39 +459,56 @@ fn parse_env_config_args(input: &DeriveInput) -> syn::Result<EnvConfigArgs> {
 
         let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
         for meta in metas {
-            match meta {
-                Meta::NameValue(name_value) if name_value.path.is_ident("global") => {
-                    let ident = match name_value.value {
-                        Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => path.segments[0].ident.clone(),
-                        other => {
-                            return Err(syn::Error::new_spanned(
-                                other,
-                                "`#[env_config(global = ...)]` expects an identifier",
-                            ));
-                        }
-                    };
-                    args.global = Some(ident);
-                }
-                Meta::NameValue(name_value) if name_value.path.is_ident("dotenv") => {
-                    args.dotenv = match name_value.value {
-                        Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) => DotenvMode::File(value.value()),
-                        Expr::Lit(ExprLit { lit: Lit::Bool(value), .. }) if !value.value => DotenvMode::Disabled,
-                        other => {
-                            return Err(syn::Error::new_spanned(
-                                other,
-                                "`#[env_config(dotenv = ...)]` expects a string literal or `false`",
-                            ));
-                        }
-                    };
-                }
-                other => {
-                    return Err(syn::Error::new_spanned(other, "unsupported `#[env_config]` argument"));
-                }
-            }
+            parse_env_config_meta(&mut args, meta)?;
         }
     }
 
     Ok(args)
+}
+
+fn parse_env_config_attr(attr: proc_macro2::TokenStream) -> syn::Result<EnvConfigArgs> {
+    let mut args = EnvConfigArgs::default();
+    let metas = Punctuated::<Meta, Token![,]>::parse_terminated.parse2(attr)?;
+
+    for meta in metas {
+        parse_env_config_meta(&mut args, meta)?;
+    }
+
+    Ok(args)
+}
+
+fn parse_env_config_meta(args: &mut EnvConfigArgs, meta: Meta) -> syn::Result<()> {
+    match meta {
+        Meta::NameValue(name_value) if name_value.path.is_ident("global") => {
+            let ident = match name_value.value {
+                Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => path.segments[0].ident.clone(),
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "`#[env_config(global = ...)]` expects an identifier",
+                    ));
+                }
+            };
+            args.global = Some(ident);
+        }
+        Meta::NameValue(name_value) if name_value.path.is_ident("dotenv") => {
+            args.dotenv = match name_value.value {
+                Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) => DotenvMode::File(value.value()),
+                Expr::Lit(ExprLit { lit: Lit::Bool(value), .. }) if !value.value => DotenvMode::Disabled,
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "`#[env_config(dotenv = ...)]` expects a string literal or `false`",
+                    ));
+                }
+            };
+        }
+        other => {
+            return Err(syn::Error::new_spanned(other, "unsupported `#[env_config]` argument"));
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
