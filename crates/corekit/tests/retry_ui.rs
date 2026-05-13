@@ -21,6 +21,8 @@ fn main() -> ui_test::color_eyre::Result<()> {
         "retry_from_prelude.rs".into(),
         "retry_defaults.rs".into(),
         "retry_full_policy.rs".into(),
+        "retry_timeout_owned_param.rs".into(),
+        "fail_retry_preserves_outer_deprecated_attr.rs".into(),
         "fail_retry_non_async.rs".into(),
         "fail_retry_unknown_arg.rs".into(),
         "fail_retry_non_integer_max_retries.rs".into(),

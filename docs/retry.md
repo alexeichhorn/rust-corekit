@@ -51,9 +51,7 @@ async fn call_api() -> Result<String, ApiError> {
 }
 ```
 
-Without arguments, `max_retries` defaults to `20`.
-
-The intended default policy matches the CareerArc backend wrapper:
+Without arguments, the default policy matches the CareerArc backend wrapper:
 
 - `max_retries = 20`
 - `initial_delay = "1s"`
@@ -75,6 +73,14 @@ impl Retryable for ApiError {
 
 Non-retryable errors return immediately.
 
-## Current Scope
+## With Timeout
 
-The current retry loop supports `max_retries` and retries immediately. `initial_delay`, `exponential_base`, `max_delay`, and `jitter` are documented here as the next retry slice, but are not accepted by the macro yet.
+`#[retry]` can wrap `#[timeout]` so each retry attempt gets its own timeout:
+
+```rust
+#[retry(max_retries = 3, initial_delay = "500ms", jitter = false)]
+#[timeout("10s")]
+async fn call_api() -> Result<String, ApiError> {
+    Ok("ok".to_owned())
+}
+```

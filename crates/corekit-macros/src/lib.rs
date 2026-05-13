@@ -5,8 +5,8 @@ use quote::{format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse_macro_input, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemFn, ItemStruct, Lit, Meta, Path,
-    Token, Type, Visibility,
+    parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemFn, ItemStruct, Lit, Meta,
+    Path, Token, Type, Visibility,
 };
 use syn::{GenericArgument, PathArguments};
 
@@ -66,6 +66,41 @@ pub fn retry(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expand_retry(args, input).into()
+}
+
+#[proc_macro_attribute]
+pub fn timeout(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let original_item = proc_macro2::TokenStream::from(item.clone());
+    let parsed_item = match syn::parse::<Item>(item) {
+        Ok(item) => item,
+        Err(error) => return error.into_compile_error().into(),
+    };
+
+    let input = match parsed_item {
+        Item::Fn(input) => input,
+        _ => {
+            let error = timeout_error("`#[timeout]` can only be used on async functions");
+            return quote! {
+                #original_item
+                #error
+            }
+            .into();
+        }
+    };
+
+    let args = match syn::parse::<TimeoutArgs>(attr) {
+        Ok(args) => args,
+        Err(error) => {
+            let error = error.into_compile_error();
+            return quote! {
+                #input
+                #error
+            }
+            .into();
+        }
+    };
+
+    expand_timeout(args, input).into()
 }
 
 #[proc_macro_attribute]
@@ -306,6 +341,37 @@ fn parse_retry_duration(value: &str, error_message: &str, span: proc_macro2::Spa
     number.checked_mul(multiplier).ok_or_else(|| syn::Error::new(span, error_message))
 }
 
+struct TimeoutArgs {
+    duration_millis: u64,
+}
+
+impl Parse for TimeoutArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let args = Punctuated::<Expr, Token![,]>::parse_terminated(input)?;
+
+        if args.len() != 1 {
+            return Err(syn::Error::new(
+                input.span(),
+                "`#[timeout(...)]` expects exactly one duration string",
+            ));
+        }
+
+        let duration = args.first().expect("checked arg length");
+        let duration_millis = match duration {
+            Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) => parse_retry_duration(
+                value.value().as_str(),
+                "`#[timeout(...)]` expects a duration string like \"500ms\", \"1s\", \"2m\", or \"1h\"",
+                value.span(),
+            )?,
+            other => {
+                return Err(syn::Error::new_spanned(other, "`#[timeout(...)]` expects a string literal"));
+            }
+        };
+
+        Ok(Self { duration_millis })
+    }
+}
+
 fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
     if input.sig.asyncness.is_none() {
         let error = retry_error("`#[retry]` can only be used on async functions");
@@ -325,8 +391,21 @@ fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
     let max_delay_millis = args.max_delay_millis;
     let jitter = args.jitter;
 
+    let (outer_attrs, inner_attrs) = split_retry_attrs(attrs);
+
+    let attempt = match retry_attempt_expression(&inner_attrs, block) {
+        Ok(attempt) => attempt,
+        Err(error) => {
+            let error = error.into_compile_error();
+            return quote! {
+                #input
+                #error
+            };
+        }
+    };
+
     quote! {
-        #(#attrs)*
+        #(#outer_attrs)*
         #vis #sig {
             let mut __corekit_retry_count: usize = 0;
             let __corekit_retry_max_delay_millis: u64 = #max_delay_millis;
@@ -334,7 +413,7 @@ fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
                 ::std::cmp::min(#initial_delay_millis, __corekit_retry_max_delay_millis);
 
             loop {
-                let __corekit_retry_result = async #block.await;
+                let __corekit_retry_result = #attempt;
 
                 match __corekit_retry_result {
                     Ok(__corekit_retry_value) => return Ok(__corekit_retry_value),
@@ -377,8 +456,75 @@ fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
     }
 }
 
+fn split_retry_attrs(attrs: &[Attribute]) -> (Vec<&Attribute>, Vec<&Attribute>) {
+    attrs.iter().partition(|attr| !is_timeout_attr(attr))
+}
+
+fn is_timeout_attr(attr: &Attribute) -> bool {
+    attr.path().segments.last().is_some_and(|segment| segment.ident == "timeout")
+}
+
+fn retry_attempt_expression(attrs: &[&Attribute], block: &syn::Block) -> syn::Result<proc_macro2::TokenStream> {
+    match attrs {
+        [] => Ok(quote! {
+            async #block.await
+        }),
+        [timeout_attr] => {
+            let args = timeout_attr.parse_args::<TimeoutArgs>()?;
+            Ok(timeout_attempt(args.duration_millis, quote! { async #block }))
+        }
+        [_, extra, ..] => Err(syn::Error::new_spanned(
+            extra,
+            "`#[retry]` supports at most one `#[timeout]` attribute",
+        )),
+    }
+}
+
 fn retry_error(message: &str) -> proc_macro2::TokenStream {
     syn::Error::new(proc_macro2::Span::call_site(), message).into_compile_error()
+}
+
+fn expand_timeout(args: TimeoutArgs, input: ItemFn) -> proc_macro2::TokenStream {
+    if input.sig.asyncness.is_none() {
+        let error = timeout_error("`#[timeout]` can only be used on async functions");
+        return quote! {
+            #input
+            #error
+        };
+    }
+
+    let attrs = &input.attrs;
+    let vis = &input.vis;
+    let sig = &input.sig;
+    let block = &input.block;
+    let duration_millis = args.duration_millis;
+
+    let attempt = timeout_attempt(duration_millis, quote! { async #block });
+
+    quote! {
+        #(#attrs)*
+        #vis #sig {
+            #attempt
+        }
+    }
+}
+
+fn timeout_error(message: &str) -> proc_macro2::TokenStream {
+    syn::Error::new(proc_macro2::Span::call_site(), message).into_compile_error()
+}
+
+fn timeout_attempt(duration_millis: u64, future: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    quote! {
+        match ::corekit::__private::tokio::time::timeout(
+            ::std::time::Duration::from_millis(#duration_millis),
+            #future,
+        )
+        .await
+        {
+            Ok(__corekit_timeout_result) => __corekit_timeout_result,
+            Err(_) => Err(::corekit::FromTimeout::from_timeout()),
+        }
+    }
 }
 
 #[derive(Default)]
