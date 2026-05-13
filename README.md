@@ -12,14 +12,12 @@ use corekit::prelude::*;
 
 ## EnvConfig
 
-Use `#[derive(EnvConfig)]` for typed environment config. Add `#[env_config(global = env)]` if you want global field-style access.
+Use `#[env_config]` for typed environment config. Add `global = env` if you want global field-style access.
 
 ```rust
 use corekit::prelude::*;
 
-#[derive(Debug, Clone, EnvConfig)]
 #[env_config(global = env)]
-#[allow(non_snake_case)]
 pub struct Env {
     pub DATABASE_URL: String,
     pub OPENAI_API_KEY: SecretString,
@@ -34,6 +32,16 @@ pub struct Env {
 let database_url = env.DATABASE_URL.as_str();
 let openai_key = env.OPENAI_API_KEY.expose();
 let worker_count = env.WORKER_COUNT;
+```
+
+The explicit derive form is still available when preferred:
+
+```rust
+#[derive(EnvConfig)]
+#[env_config(global = env)]
+pub struct Env {
+    pub database_url: String,
+}
 ```
 
 Example `.env`:
@@ -60,6 +68,20 @@ Behavior:
 - Errors are collected together.
 - First access to the generated global lazily loads the env config.
 - Failed global loading panics with the collected env errors.
+
+Dotenv loading can be customized:
+
+```rust
+#[env_config(global = env, dotenv = ".env.test")]
+pub struct TestEnv {
+    pub DATABASE_URL: String,
+}
+
+#[env_config(dotenv = false)]
+pub struct ProcessOnlyEnv {
+    pub DATABASE_URL: String,
+}
+```
 
 Field names:
 
