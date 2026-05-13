@@ -46,17 +46,19 @@ pub struct Env {
 }
 
 #[singleton]
-pub struct UserService;
+pub struct UserService {
+    openai_client: OpenAIClient,
+}
 
 impl UserService {
     fn new() -> Self {
-        Self
+        Self {
+            openai_client: OpenAIClient::new(env.OPENAI_API_KEY.expose()),
+        }
     }
 
     pub async fn create_user(&self, input: CreateUser) -> Result<User, UserError> {
-        let database_url = env.DATABASE_URL.as_str();
-        let openai_key = env.OPENAI_API_KEY.expose();
-        todo!("use input, database_url, and openai_key")
+        todo!("use input and the configured service state")
     }
 }
 ```

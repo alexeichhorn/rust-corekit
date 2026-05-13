@@ -24,23 +24,20 @@ pub struct Env {
     #[env(default = false)]
     pub DEV_MODE: bool,
 
+    #[env(optional)]
     pub SENTRY_DSN: Option<String>,
 }
 
 #[singleton]
-pub struct UserService;
+pub struct UserService {
+    openai_client: OpenAIClient,
+}
 
 impl UserService {
     fn new() -> Self {
-        Self
-    }
-
-    pub fn database_url(&self) -> &str {
-        env.DATABASE_URL.as_str()
-    }
-
-    pub fn openai_key(&self) -> &str {
-        env.OPENAI_API_KEY.expose()
+        Self {
+            openai_client: OpenAIClient::new(env.OPENAI_API_KEY.expose()),
+        }
     }
 }
 ```
