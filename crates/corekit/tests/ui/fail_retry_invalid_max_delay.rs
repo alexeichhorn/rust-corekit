@@ -9,8 +9,8 @@ impl Retryable for Error {
     }
 }
 
-#[retry(max_retries = 3, unknown = true)]
-//~^ ERROR: unsupported `#[retry]` argument
+#[retry(max_delay = "2d")]
+//~^ ERROR: `#[retry(max_delay = ...)]` expects a duration string like "500ms", "1s", "2m", or "1h"
 async fn call() -> Result<(), Error> {
     Ok(())
 }

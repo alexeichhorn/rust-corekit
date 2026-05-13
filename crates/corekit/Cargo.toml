@@ -12,7 +12,7 @@ corekit-macros.workspace = true
 dotenvy = "0.15.7"
 
 [dev-dependencies]
-tokio = { version = "1.52.3", features = ["macros", "rt"] }
+tokio = { version = "1.52.3", features = ["macros", "rt", "test-util", "time"] }
 ui_test = "0.30.5"
 
 [[test]]

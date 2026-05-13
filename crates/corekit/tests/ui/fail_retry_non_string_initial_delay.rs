@@ -9,8 +9,8 @@ impl Retryable for Error {
     }
 }
 
-#[retry(max_retries = 3, unknown = true)]
-//~^ ERROR: unsupported `#[retry]` argument
+#[retry(initial_delay = 1)]
+//~^ ERROR: `#[retry(initial_delay = ...)]` expects a string literal
 async fn call() -> Result<(), Error> {
     Ok(())
 }

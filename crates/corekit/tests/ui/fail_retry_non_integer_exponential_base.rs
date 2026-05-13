@@ -9,8 +9,8 @@ impl Retryable for Error {
     }
 }
 
-#[retry(max_retries = 3, unknown = true)]
-//~^ ERROR: unsupported `#[retry]` argument
+#[retry(exponential_base = "2")]
+//~^ ERROR: `#[retry(exponential_base = ...)]` expects an integer literal greater than 0
 async fn call() -> Result<(), Error> {
     Ok(())
 }

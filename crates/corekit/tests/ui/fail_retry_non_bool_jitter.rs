@@ -9,8 +9,8 @@ impl Retryable for Error {
     }
 }
 
-#[retry(max_retries = 3, unknown = true)]
-//~^ ERROR: unsupported `#[retry]` argument
+#[retry(jitter = "true")]
+//~^ ERROR: `#[retry(jitter = ...)]` expects a boolean literal
 async fn call() -> Result<(), Error> {
     Ok(())
 }

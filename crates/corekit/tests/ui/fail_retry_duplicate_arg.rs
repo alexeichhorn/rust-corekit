@@ -9,8 +9,8 @@ impl Retryable for Error {
     }
 }
 
-#[retry(max_retries = 3, unknown = true)]
-//~^ ERROR: unsupported `#[retry]` argument
+#[retry(max_retries = 3, max_retries = 4)]
+//~^ ERROR: duplicate `#[retry(max_retries = ...)]` argument
 async fn call() -> Result<(), Error> {
     Ok(())
 }

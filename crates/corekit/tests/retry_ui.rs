@@ -20,9 +20,18 @@ fn main() -> ui_test::color_eyre::Result<()> {
         "retry_basic.rs".into(),
         "retry_from_prelude.rs".into(),
         "retry_defaults.rs".into(),
+        "retry_full_policy.rs".into(),
         "fail_retry_non_async.rs".into(),
         "fail_retry_unknown_arg.rs".into(),
         "fail_retry_non_integer_max_retries.rs".into(),
+        "fail_retry_duplicate_arg.rs".into(),
+        "fail_retry_invalid_initial_delay.rs".into(),
+        "fail_retry_invalid_max_delay.rs".into(),
+        "fail_retry_non_string_initial_delay.rs".into(),
+        "fail_retry_non_string_max_delay.rs".into(),
+        "fail_retry_zero_exponential_base.rs".into(),
+        "fail_retry_non_integer_exponential_base.rs".into(),
+        "fail_retry_non_bool_jitter.rs".into(),
     ];
 
     ui_test::run_tests(config)

@@ -1,3 +1,4 @@
+//@check-pass
 use corekit::{retry, Retryable};
 
 #[derive(Debug)]
@@ -9,8 +10,7 @@ impl Retryable for Error {
     }
 }
 
-#[retry(max_retries = 3, unknown = true)]
-//~^ ERROR: unsupported `#[retry]` argument
+#[retry(max_retries = 5, initial_delay = "1s", exponential_base = 2, max_delay = "180s", jitter = true)]
 async fn call() -> Result<(), Error> {
     Ok(())
 }
