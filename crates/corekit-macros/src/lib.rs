@@ -5,8 +5,8 @@ use quote::{format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse_macro_input, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemStruct, Lit, Meta, Path, Token, Type,
-    Visibility,
+    parse_macro_input, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemFn, ItemStruct, Lit, Meta, Path,
+    Token, Type, Visibility,
 };
 use syn::{GenericArgument, PathArguments};
 
@@ -31,6 +31,41 @@ pub fn singleton(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expand_singleton(args, parsed_item, original_item).into()
+}
+
+#[proc_macro_attribute]
+pub fn retry(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let original_item = proc_macro2::TokenStream::from(item.clone());
+    let parsed_item = match syn::parse::<Item>(item) {
+        Ok(item) => item,
+        Err(error) => return error.into_compile_error().into(),
+    };
+
+    let input = match parsed_item {
+        Item::Fn(input) => input,
+        _ => {
+            let error = retry_error("`#[retry]` can only be used on async functions");
+            return quote! {
+                #original_item
+                #error
+            }
+            .into();
+        }
+    };
+
+    let args = match syn::parse::<RetryArgs>(attr) {
+        Ok(args) => args,
+        Err(error) => {
+            let error = error.into_compile_error();
+            return quote! {
+                #input
+                #error
+            }
+            .into();
+        }
+    };
+
+    expand_retry(args, input).into()
 }
 
 #[proc_macro_attribute]
@@ -97,6 +132,96 @@ pub fn derive_env_config(item: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(error) => error.into_compile_error().into(),
     }
+}
+
+struct RetryArgs {
+    max_retries: usize,
+}
+
+impl Default for RetryArgs {
+    fn default() -> Self {
+        Self { max_retries: 20 }
+    }
+}
+
+impl Parse for RetryArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let metas = Punctuated::<Meta, Token![,]>::parse_terminated(input)?;
+        let mut args = RetryArgs::default();
+        let mut has_max_retries = false;
+
+        for meta in metas {
+            match meta {
+                Meta::NameValue(name_value) if name_value.path.is_ident("max_retries") => {
+                    if has_max_retries {
+                        return Err(syn::Error::new_spanned(
+                            name_value,
+                            "duplicate `#[retry(max_retries = ...)]` argument",
+                        ));
+                    }
+
+                    let max_retries = match name_value.value {
+                        Expr::Lit(ExprLit { lit: Lit::Int(value), .. }) => value.base10_parse::<usize>()?,
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                other,
+                                "`#[retry(max_retries = ...)]` expects a non-negative integer literal",
+                            ));
+                        }
+                    };
+                    args.max_retries = max_retries;
+                    has_max_retries = true;
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(other, "unsupported `#[retry]` argument"));
+                }
+            }
+        }
+
+        Ok(args)
+    }
+}
+
+fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
+    if input.sig.asyncness.is_none() {
+        let error = retry_error("`#[retry]` can only be used on async functions");
+        return quote! {
+            #input
+            #error
+        };
+    }
+
+    let attrs = &input.attrs;
+    let vis = &input.vis;
+    let sig = &input.sig;
+    let block = &input.block;
+    let max_retries = args.max_retries;
+
+    quote! {
+        #(#attrs)*
+        #vis #sig {
+            let mut __corekit_retry_count: usize = 0;
+
+            loop {
+                let __corekit_retry_result = async #block.await;
+
+                match __corekit_retry_result {
+                    Ok(__corekit_retry_value) => return Ok(__corekit_retry_value),
+                    Err(__corekit_retry_error) => {
+                        if !::corekit::Retryable::is_retryable(&__corekit_retry_error) || __corekit_retry_count >= #max_retries {
+                            return Err(__corekit_retry_error);
+                        }
+
+                        __corekit_retry_count += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn retry_error(message: &str) -> proc_macro2::TokenStream {
+    syn::Error::new(proc_macro2::Span::call_site(), message).into_compile_error()
 }
 
 #[derive(Default)]

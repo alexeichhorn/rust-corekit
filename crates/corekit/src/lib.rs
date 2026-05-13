@@ -2,10 +2,12 @@
 
 #[path = "env_config.rs"]
 mod env_config_runtime;
+mod retry;
 mod secret_string;
 
 pub use corekit_macros::*;
 pub use env_config_runtime::{EnvError, EnvErrorKind, EnvVarError};
+pub use retry::Retryable;
 pub use secret_string::SecretString;
 
 pub mod prelude {
