@@ -18,6 +18,9 @@ fn main() -> ui_test::color_eyre::Result<()> {
     config.output_conflict_handling = ui_test::ignore_output_conflict;
     config.filter_files = vec![
         "env_config_basic.rs".into(),
+        "env_config_attribute_basic.rs".into(),
+        "env_config_attribute_from_prelude.rs".into(),
+        "env_config_attribute_uppercase_global.rs".into(),
         "env_config_from_prelude.rs".into(),
         "env_config_global_access.rs".into(),
         "env_config_global_visibility.rs".into(),

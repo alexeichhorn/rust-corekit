@@ -9,7 +9,7 @@ It should make common backend patterns feel cleaner and more consistent without 
 Initial public features:
 
 - `#[singleton]`
-- `#[derive(EnvConfig)]`
+- `#[env_config(...)]`
 - `#[retry(...)]`
 - `#[timeout(...)]`
 - Later: shared LLM layer, exact API open for discussion
@@ -38,9 +38,7 @@ Example:
 ```rust
 use corekit::prelude::*;
 
-#[derive(Debug, Clone, EnvConfig)]
 #[env_config(global = env)]
-#[allow(non_snake_case)]
 pub struct Env {
     pub DATABASE_URL: String,
     pub OPENAI_API_KEY: SecretString,
@@ -138,21 +136,33 @@ Do not hold a blocking lock guard across `.await`.
 
 ---
 
-# Feature: `#[derive(EnvConfig)]`
+# Feature: `#[env_config(...)]`
 
 ## User-facing goal
 
 Replace Python-style `env.py` files with one typed Rust struct that can be accessed globally without passing config through every service constructor.
 
+Primary API:
+
 ```rust
-#[derive(Debug, Clone, EnvConfig)]
 #[env_config(global = env)]
-#[allow(non_snake_case)]
 pub struct Env {
     pub DATABASE_URL: String,
     pub REDIS_PORT: u16,
     pub DEV_MODE: bool,
     pub OPENAI_API_KEY: SecretString,
+}
+```
+
+The attribute macro owns the struct item, so uppercase env-style field names should not require a separate `#[allow(non_snake_case)]`.
+
+For explicit derive-based usage, `#[derive(EnvConfig)]` remains supported:
+
+```rust
+#[derive(EnvConfig)]
+#[env_config(global = env)]
+pub struct Env {
+    pub database_url: String,
 }
 ```
 
@@ -205,7 +215,7 @@ REDIS_PORT
 Uppercase field names map to themselves, so no double definition is needed:
 
 ```rust
-#[allow(non_snake_case)]
+#[env_config(global = env)]
 pub struct Env {
     pub DATABASE_URL: String,
     pub OPENAI_API_KEY: SecretString,

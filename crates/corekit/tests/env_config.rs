@@ -93,6 +93,15 @@ struct DisabledDotenvEnv {
     corekit_disabled_dotenv_database_url: String,
 }
 
+#[env_config(global = corekit_attribute_global_env, dotenv = false)]
+pub struct AttributeEnv {
+    pub COREKIT_ATTRIBUTE_DATABASE_URL: String,
+    pub COREKIT_ATTRIBUTE_API_KEY: SecretString,
+    #[env(default = false)]
+    pub COREKIT_ATTRIBUTE_DEV_MODE: bool,
+    pub COREKIT_ATTRIBUTE_SENTRY_DSN: Option<String>,
+}
+
 #[test]
 fn load_reads_required_primitive_fields_from_screaming_snake_case_env_names() {
     with_env(
@@ -474,6 +483,32 @@ fn process_env_values_still_work_when_dotenv_loading_is_disabled() {
             assert_eq!(config.corekit_disabled_dotenv_database_url, "postgres://process");
         });
     });
+}
+
+#[test]
+fn attribute_macro_loads_env_and_generates_global_access() {
+    with_env(
+        &[
+            ("COREKIT_ATTRIBUTE_DATABASE_URL", Some("postgres://attribute")),
+            ("COREKIT_ATTRIBUTE_API_KEY", Some("sk-attribute")),
+            ("COREKIT_ATTRIBUTE_DEV_MODE", None),
+            ("COREKIT_ATTRIBUTE_SENTRY_DSN", None),
+        ],
+        || {
+            let loaded = AttributeEnv::load().unwrap();
+
+            assert_eq!(loaded.COREKIT_ATTRIBUTE_DATABASE_URL, "postgres://attribute");
+            assert_eq!(loaded.COREKIT_ATTRIBUTE_API_KEY.expose(), "sk-attribute");
+            assert!(!loaded.COREKIT_ATTRIBUTE_DEV_MODE);
+            assert_eq!(loaded.COREKIT_ATTRIBUTE_SENTRY_DSN, None);
+
+            let database_url: &str = corekit_attribute_global_env.COREKIT_ATTRIBUTE_DATABASE_URL.as_str();
+            let api_key: &str = corekit_attribute_global_env.COREKIT_ATTRIBUTE_API_KEY.expose();
+
+            assert_eq!(database_url, "postgres://attribute");
+            assert_eq!(api_key, "sk-attribute");
+        },
+    );
 }
 
 fn all_env_vars_absent() -> [(&'static str, Option<&'static str>); 5] {
