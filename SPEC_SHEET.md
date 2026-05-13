@@ -55,15 +55,12 @@ pub struct UserService {
 
 impl UserService {
     fn new() -> Self {
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(env.REQUEST_TIMEOUT_SECONDS))
-            .build()
-            .expect("failed to build reqwest client");
-        let openai_client = OpenAIClient::new(http_client.clone(), env.OPENAI_API_KEY.expose());
-
         Self {
-            http_client,
-            openai_client,
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(env.REQUEST_TIMEOUT_SECONDS))
+                .build()
+                .expect("failed to build reqwest client"),
+            openai_client: OpenAIClient::new(env.OPENAI_API_KEY.expose()),
         }
     }
 
