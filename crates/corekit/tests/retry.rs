@@ -89,7 +89,7 @@ async fn retry_defaults_return_success_without_extra_attempts() {
     assert_eq!(IMMEDIATE_SUCCESS_ATTEMPTS.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retry_retries_retryable_errors_until_success() {
     RETRY_THEN_SUCCESS_ATTEMPTS.store(0, Ordering::SeqCst);
 
@@ -109,7 +109,7 @@ async fn retry_stops_on_non_retryable_error() {
     assert_eq!(NON_RETRYABLE_ATTEMPTS.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retry_returns_final_error_after_retries_are_exhausted() {
     EXHAUSTED_ATTEMPTS.store(0, Ordering::SeqCst);
 

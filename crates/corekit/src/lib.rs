@@ -17,4 +17,5 @@ pub mod prelude {
 #[doc(hidden)]
 pub mod __private {
     pub use dotenvy;
+    pub use tokio;
 }

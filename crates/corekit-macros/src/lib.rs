@@ -136,11 +136,21 @@ pub fn derive_env_config(item: TokenStream) -> TokenStream {
 
 struct RetryArgs {
     max_retries: usize,
+    initial_delay_millis: u64,
+    exponential_base: u64,
+    max_delay_millis: u64,
+    jitter: bool,
 }
 
 impl Default for RetryArgs {
     fn default() -> Self {
-        Self { max_retries: 20 }
+        Self {
+            max_retries: 20,
+            initial_delay_millis: 1_000,
+            exponential_base: 2,
+            max_delay_millis: 180_000,
+            jitter: true,
+        }
     }
 }
 
@@ -149,6 +159,10 @@ impl Parse for RetryArgs {
         let metas = Punctuated::<Meta, Token![,]>::parse_terminated(input)?;
         let mut args = RetryArgs::default();
         let mut has_max_retries = false;
+        let mut has_initial_delay = false;
+        let mut has_exponential_base = false;
+        let mut has_max_delay = false;
+        let mut has_jitter = false;
 
         for meta in metas {
             match meta {
@@ -172,6 +186,96 @@ impl Parse for RetryArgs {
                     args.max_retries = max_retries;
                     has_max_retries = true;
                 }
+                Meta::NameValue(name_value) if name_value.path.is_ident("initial_delay") => {
+                    if has_initial_delay {
+                        return Err(syn::Error::new_spanned(
+                            name_value,
+                            "duplicate `#[retry(initial_delay = ...)]` argument",
+                        ));
+                    }
+
+                    let initial_delay = match &name_value.value {
+                        Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) => parse_retry_duration(
+                            value.value().as_str(),
+                            "`#[retry(initial_delay = ...)]` expects a duration string like \"500ms\", \"1s\", \"2m\", or \"1h\"",
+                            value.span(),
+                        )?,
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                other,
+                                "`#[retry(initial_delay = ...)]` expects a string literal",
+                            ));
+                        }
+                    };
+                    args.initial_delay_millis = initial_delay;
+                    has_initial_delay = true;
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("exponential_base") => {
+                    if has_exponential_base {
+                        return Err(syn::Error::new_spanned(
+                            name_value,
+                            "duplicate `#[retry(exponential_base = ...)]` argument",
+                        ));
+                    }
+
+                    let exponential_base = match &name_value.value {
+                        Expr::Lit(ExprLit { lit: Lit::Int(value), .. }) => value.base10_parse::<u64>()?,
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                other,
+                                "`#[retry(exponential_base = ...)]` expects an integer literal greater than 0",
+                            ));
+                        }
+                    };
+
+                    if exponential_base == 0 {
+                        return Err(syn::Error::new_spanned(
+                            name_value,
+                            "`#[retry(exponential_base = ...)]` expects an integer literal greater than 0",
+                        ));
+                    }
+
+                    args.exponential_base = exponential_base;
+                    has_exponential_base = true;
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("max_delay") => {
+                    if has_max_delay {
+                        return Err(syn::Error::new_spanned(
+                            name_value,
+                            "duplicate `#[retry(max_delay = ...)]` argument",
+                        ));
+                    }
+
+                    let max_delay = match &name_value.value {
+                        Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) => parse_retry_duration(
+                            value.value().as_str(),
+                            "`#[retry(max_delay = ...)]` expects a duration string like \"500ms\", \"1s\", \"2m\", or \"1h\"",
+                            value.span(),
+                        )?,
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                other,
+                                "`#[retry(max_delay = ...)]` expects a string literal",
+                            ));
+                        }
+                    };
+                    args.max_delay_millis = max_delay;
+                    has_max_delay = true;
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("jitter") => {
+                    if has_jitter {
+                        return Err(syn::Error::new_spanned(name_value, "duplicate `#[retry(jitter = ...)]` argument"));
+                    }
+
+                    let jitter = match name_value.value {
+                        Expr::Lit(ExprLit { lit: Lit::Bool(value), .. }) => value.value,
+                        other => {
+                            return Err(syn::Error::new_spanned(other, "`#[retry(jitter = ...)]` expects a boolean literal"));
+                        }
+                    };
+                    args.jitter = jitter;
+                    has_jitter = true;
+                }
                 other => {
                     return Err(syn::Error::new_spanned(other, "unsupported `#[retry]` argument"));
                 }
@@ -180,6 +284,26 @@ impl Parse for RetryArgs {
 
         Ok(args)
     }
+}
+
+fn parse_retry_duration(value: &str, error_message: &str, span: proc_macro2::Span) -> syn::Result<u64> {
+    let Some((number, multiplier)) = value
+        .strip_suffix("ms")
+        .map(|number| (number, 1_u64))
+        .or_else(|| value.strip_suffix('s').map(|number| (number, 1_000_u64)))
+        .or_else(|| value.strip_suffix('m').map(|number| (number, 60_000_u64)))
+        .or_else(|| value.strip_suffix('h').map(|number| (number, 3_600_000_u64)))
+    else {
+        return Err(syn::Error::new(span, error_message));
+    };
+
+    if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {
+        return Err(syn::Error::new(span, error_message));
+    }
+
+    let number = number.parse::<u64>().map_err(|_| syn::Error::new(span, error_message))?;
+
+    number.checked_mul(multiplier).ok_or_else(|| syn::Error::new(span, error_message))
 }
 
 fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
@@ -196,11 +320,18 @@ fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
     let sig = &input.sig;
     let block = &input.block;
     let max_retries = args.max_retries;
+    let initial_delay_millis = args.initial_delay_millis;
+    let exponential_base = args.exponential_base;
+    let max_delay_millis = args.max_delay_millis;
+    let jitter = args.jitter;
 
     quote! {
         #(#attrs)*
         #vis #sig {
             let mut __corekit_retry_count: usize = 0;
+            let __corekit_retry_max_delay_millis: u64 = #max_delay_millis;
+            let mut __corekit_retry_delay_millis: u64 =
+                ::std::cmp::min(#initial_delay_millis, __corekit_retry_max_delay_millis);
 
             loop {
                 let __corekit_retry_result = async #block.await;
@@ -213,6 +344,32 @@ fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
                         }
 
                         __corekit_retry_count += 1;
+
+                        let __corekit_retry_sleep_millis = if #jitter && __corekit_retry_delay_millis > 0 {
+                            let __corekit_retry_now_nanos = ::std::time::SystemTime::now()
+                                .duration_since(::std::time::UNIX_EPOCH)
+                                .map(|__corekit_retry_duration| __corekit_retry_duration.subsec_nanos() as u64)
+                                .unwrap_or(0);
+
+                            if __corekit_retry_delay_millis == u64::MAX {
+                                __corekit_retry_now_nanos
+                            } else {
+                                __corekit_retry_now_nanos % (__corekit_retry_delay_millis + 1)
+                            }
+                        } else {
+                            __corekit_retry_delay_millis
+                        };
+
+                        if __corekit_retry_sleep_millis > 0 {
+                            ::corekit::__private::tokio::time::sleep(
+                                ::std::time::Duration::from_millis(__corekit_retry_sleep_millis),
+                            )
+                            .await;
+                        }
+
+                        __corekit_retry_delay_millis = __corekit_retry_delay_millis
+                            .saturating_mul(#exponential_base)
+                            .min(__corekit_retry_max_delay_millis);
                     }
                 }
             }
