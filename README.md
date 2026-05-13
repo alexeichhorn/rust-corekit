@@ -72,8 +72,34 @@ impl UserService {
 let service = UserService::shared();
 ```
 
+## Retry
+
+Use `#[retry]` on async `Result` functions. The error type decides which failures are retryable.
+
+```rust
+use corekit::prelude::*;
+
+#[derive(Debug)]
+enum ApiError {
+    RateLimited,
+    InvalidRequest,
+}
+
+impl Retryable for ApiError {
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::RateLimited)
+    }
+}
+
+#[retry(max_retries = 3)]
+async fn call_api() -> Result<String, ApiError> {
+    Ok("ok".to_owned())
+}
+```
+
 ## More Docs
 
 - [EnvConfig](docs/env-config.md)
 - [Singleton](docs/singleton.md)
 - [SecretString](docs/secret-string.md)
+- [Retry](docs/retry.md)
