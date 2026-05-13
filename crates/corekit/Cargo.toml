@@ -35,3 +35,8 @@ harness = false
 name = "retry_ui"
 path = "tests/retry_ui.rs"
 harness = false
+
+[[test]]
+name = "timeout_ui"
+path = "tests/timeout_ui.rs"
+harness = false
