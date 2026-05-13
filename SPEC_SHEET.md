@@ -369,6 +369,10 @@ impl Retryable for ExternalApiError {
 ## Syntax
 
 ```rust
+#[retry]
+```
+
+```rust
 #[retry(max_retries = 3)]
 ```
 
@@ -385,6 +389,16 @@ impl Retryable for ExternalApiError {
 ```text
 1 initial try + 3 retries = up to 4 total attempts
 ```
+
+## Defaults
+
+When no arguments are supplied, use the same defaults as the CareerArc backend retry wrapper:
+
+- `max_retries = 20`
+- `initial_delay = "1s"`
+- `exponential_base = 2`
+- `max_delay = "180s"`
+- `jitter = true`
 
 ## Implementation note
 

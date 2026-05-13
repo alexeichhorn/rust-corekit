@@ -12,6 +12,7 @@ corekit-macros.workspace = true
 dotenvy = "0.15.7"
 
 [dev-dependencies]
+tokio = { version = "1.52.3", features = ["macros", "rt"] }
 ui_test = "0.30.5"
 
 [[test]]
@@ -27,4 +28,9 @@ harness = false
 [[test]]
 name = "env_config_ui"
 path = "tests/env_config_ui.rs"
+harness = false
+
+[[test]]
+name = "retry_ui"
+path = "tests/retry_ui.rs"
 harness = false
