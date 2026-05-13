@@ -391,15 +391,18 @@ fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
     let max_delay_millis = args.max_delay_millis;
     let jitter = args.jitter;
 
-    let attempt = if attrs.is_empty() {
+    let (outer_attrs, inner_attrs) = split_retry_attrs(attrs);
+
+    let attempt = if inner_attrs.is_empty() {
         quote! {
             async #block.await
         }
     } else {
-        retry_attempt_with_inner_attrs(attrs, input.clone())
+        retry_attempt_with_inner_attrs(&inner_attrs, input.clone())
     };
 
     quote! {
+        #(#outer_attrs)*
         #vis #sig {
             let mut __corekit_retry_count: usize = 0;
             let __corekit_retry_max_delay_millis: u64 = #max_delay_millis;
@@ -450,7 +453,15 @@ fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
     }
 }
 
-fn retry_attempt_with_inner_attrs(attrs: &[Attribute], mut input: ItemFn) -> proc_macro2::TokenStream {
+fn split_retry_attrs(attrs: &[Attribute]) -> (Vec<&Attribute>, Vec<&Attribute>) {
+    attrs.iter().partition(|attr| !is_timeout_attr(attr))
+}
+
+fn is_timeout_attr(attr: &Attribute) -> bool {
+    attr.path().segments.last().is_some_and(|segment| segment.ident == "timeout")
+}
+
+fn retry_attempt_with_inner_attrs(attrs: &[&Attribute], mut input: ItemFn) -> proc_macro2::TokenStream {
     let attrs = attrs.iter();
     let mut inner_sig = input.sig.clone();
     inner_sig.ident = format_ident!("__corekit_retry_attempt");
