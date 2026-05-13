@@ -21,7 +21,7 @@ impl Retryable for Error {
 #[retry(max_retries = 1, initial_delay = "0ms", max_delay = "0ms", jitter = false)]
 #[timeout("1s")]
 async fn call(input: String) -> Result<String, Error> {
-    let _ = input;
+    let _ = input.as_str();
     Err(Error::Timeout)
 }
 

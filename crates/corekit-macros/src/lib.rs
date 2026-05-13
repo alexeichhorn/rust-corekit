@@ -5,8 +5,8 @@ use quote::{format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, FnArg, Generics, Ident, Item, ItemFn, ItemStruct,
-    Lit, Meta, Pat, Path, Token, Type, Visibility,
+    parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemFn, ItemStruct, Lit, Meta,
+    Path, Token, Type, Visibility,
 };
 use syn::{GenericArgument, PathArguments};
 
@@ -393,12 +393,15 @@ fn expand_retry(args: RetryArgs, input: ItemFn) -> proc_macro2::TokenStream {
 
     let (outer_attrs, inner_attrs) = split_retry_attrs(attrs);
 
-    let attempt = if inner_attrs.is_empty() {
-        quote! {
-            async #block.await
+    let attempt = match retry_attempt_expression(&inner_attrs, block) {
+        Ok(attempt) => attempt,
+        Err(error) => {
+            let error = error.into_compile_error();
+            return quote! {
+                #input
+                #error
+            };
         }
-    } else {
-        retry_attempt_with_inner_attrs(&inner_attrs, input.clone())
     };
 
     quote! {
@@ -461,32 +464,19 @@ fn is_timeout_attr(attr: &Attribute) -> bool {
     attr.path().segments.last().is_some_and(|segment| segment.ident == "timeout")
 }
 
-fn retry_attempt_with_inner_attrs(attrs: &[&Attribute], mut input: ItemFn) -> proc_macro2::TokenStream {
-    let attrs = attrs.iter();
-    let mut inner_sig = input.sig.clone();
-    inner_sig.ident = format_ident!("__corekit_retry_attempt");
-
-    let inner_fn = {
-        input.sig = inner_sig;
-        input.vis = Visibility::Inherited;
-        input.attrs = Vec::new();
-        input
-    };
-
-    let arguments = inner_fn.sig.inputs.iter().filter_map(retry_call_argument);
-
-    quote! {{
-        #(#attrs)*
-        #inner_fn
-
-        __corekit_retry_attempt(#(#arguments),*).await
-    }}
-}
-
-fn retry_call_argument(argument: &FnArg) -> Option<&Pat> {
-    match argument {
-        FnArg::Receiver(_) => None,
-        FnArg::Typed(argument) => Some(&argument.pat),
+fn retry_attempt_expression(attrs: &[&Attribute], block: &syn::Block) -> syn::Result<proc_macro2::TokenStream> {
+    match attrs {
+        [] => Ok(quote! {
+            async #block.await
+        }),
+        [timeout_attr] => {
+            let args = timeout_attr.parse_args::<TimeoutArgs>()?;
+            Ok(timeout_attempt(args.duration_millis, quote! { async #block }))
+        }
+        [_, extra, ..] => Err(syn::Error::new_spanned(
+            extra,
+            "`#[retry]` supports at most one `#[timeout]` attribute",
+        )),
     }
 }
 
@@ -509,24 +499,32 @@ fn expand_timeout(args: TimeoutArgs, input: ItemFn) -> proc_macro2::TokenStream 
     let block = &input.block;
     let duration_millis = args.duration_millis;
 
+    let attempt = timeout_attempt(duration_millis, quote! { async #block });
+
     quote! {
         #(#attrs)*
         #vis #sig {
-            match ::corekit::__private::tokio::time::timeout(
-                ::std::time::Duration::from_millis(#duration_millis),
-                async #block,
-            )
-            .await
-            {
-                Ok(__corekit_timeout_result) => __corekit_timeout_result,
-                Err(_) => Err(::corekit::FromTimeout::from_timeout()),
-            }
+            #attempt
         }
     }
 }
 
 fn timeout_error(message: &str) -> proc_macro2::TokenStream {
     syn::Error::new(proc_macro2::Span::call_site(), message).into_compile_error()
+}
+
+fn timeout_attempt(duration_millis: u64, future: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    quote! {
+        match ::corekit::__private::tokio::time::timeout(
+            ::std::time::Duration::from_millis(#duration_millis),
+            #future,
+        )
+        .await
+        {
+            Ok(__corekit_timeout_result) => __corekit_timeout_result,
+            Err(_) => Err(::corekit::FromTimeout::from_timeout()),
+        }
+    }
 }
 
 #[derive(Default)]
