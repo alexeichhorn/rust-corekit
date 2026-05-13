@@ -24,19 +24,30 @@ pub struct Env {
     #[env(default = false)]
     pub DEV_MODE: bool,
 
+    #[env(default = 30)]
+    pub REQUEST_TIMEOUT_SECONDS: u64,
+
     #[env(optional)]
     pub SENTRY_DSN: Option<String>,
 }
 
 #[singleton]
 pub struct UserService {
+    http_client: reqwest::Client,
     openai_client: OpenAIClient,
 }
 
 impl UserService {
     fn new() -> Self {
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(env.REQUEST_TIMEOUT_SECONDS))
+            .build()
+            .expect("failed to build reqwest client");
+        let openai_client = OpenAIClient::new(http_client.clone(), env.OPENAI_API_KEY.expose());
+
         Self {
-            openai_client: OpenAIClient::new(env.OPENAI_API_KEY.expose()),
+            http_client,
+            openai_client,
         }
     }
 }
@@ -48,6 +59,7 @@ Example `.env`:
 DATABASE_URL=postgres://localhost/app
 OPENAI_API_KEY=sk-test
 DEV_MODE=true
+REQUEST_TIMEOUT_SECONDS=30
 ```
 
 ## Singleton
