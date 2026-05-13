@@ -97,9 +97,34 @@ async fn call_api() -> Result<String, ApiError> {
 }
 ```
 
+## Timeout
+
+Use `#[timeout]` on async `Result` functions. The error type decides how a timeout is represented.
+
+```rust
+use corekit::prelude::*;
+
+#[derive(Debug)]
+enum ApiError {
+    Timeout,
+}
+
+impl FromTimeout for ApiError {
+    fn from_timeout() -> Self {
+        Self::Timeout
+    }
+}
+
+#[timeout("10s")]
+async fn call_api() -> Result<String, ApiError> {
+    Ok("ok".to_owned())
+}
+```
+
 ## More Docs
 
 - [EnvConfig](docs/env-config.md)
 - [Singleton](docs/singleton.md)
 - [SecretString](docs/secret-string.md)
 - [Retry](docs/retry.md)
+- [Timeout](docs/timeout.md)
