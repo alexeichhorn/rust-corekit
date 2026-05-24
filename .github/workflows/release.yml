@@ -20,7 +20,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features
 
       - name: Publish corekit-macros
         run: cargo publish -p corekit-macros --token ${CRATES_TOKEN}
