@@ -47,7 +47,10 @@ macro_rules! route_group {
                 self.0.add_routes(&mut inner_routes);
 
                 for (path, methods) in inner_routes {
-                    route_table.insert($crate::openapi::with_prefix($prefix, path.as_str()), methods);
+                    route_table
+                        .entry($crate::openapi::with_prefix($prefix, path.as_str()))
+                        .or_default()
+                        .extend(methods);
                 }
             }
         }
