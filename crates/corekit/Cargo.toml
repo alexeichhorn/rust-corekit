@@ -10,6 +10,8 @@ readme = "../../README.md"
 [dependencies]
 corekit-macros.workspace = true
 dotenvy = "0.15.7"
+poem = { version = "3", optional = true }
+poem-openapi = { version = "5", optional = true }
 tokio = { version = "1.52.3", features = ["time"] }
 
 [dev-dependencies]
@@ -40,3 +42,6 @@ harness = false
 name = "timeout_ui"
 path = "tests/timeout_ui.rs"
 harness = false
+
+[features]
+poem-openapi = ["dep:poem", "dep:poem-openapi"]
