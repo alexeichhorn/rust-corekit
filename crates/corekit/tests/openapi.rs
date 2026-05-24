@@ -33,6 +33,16 @@ impl ActivityRoutes {
     }
 }
 
+struct TodoCollectionRoutes;
+
+#[OpenApi]
+impl TodoCollectionRoutes {
+    #[oai(path = "/todos", method = "post")]
+    async fn create_todo(&self) -> Json<StatusResponse> {
+        Json(StatusResponse { ok: true })
+    }
+}
+
 fn meta_paths<T: OpenApi>(_: &T) -> Vec<String> {
     let mut paths = T::meta()
         .into_iter()
@@ -81,4 +91,16 @@ fn route_group_prefixes_tuple_api_meta_and_routes() {
 
     assert_eq!(meta_paths(&api), vec!["/todos", "/todos/activity/{todo_id}"]);
     assert_eq!(route_paths(api), vec!["/todos", "/todos/activity/:param0"]);
+}
+
+#[test]
+fn route_group_preserves_existing_methods_for_prefixed_path_collisions() {
+    let api = (TodoCollectionRoutes, route_group!("/todos", RootRoutes));
+
+    let mut route_table: HashMap<String, HashMap<Method, BoxEndpoint<'static>>> = HashMap::new();
+    api.add_routes(&mut route_table);
+
+    let methods = route_table.get("/todos").expect("route exists");
+    assert!(methods.contains_key(&Method::POST));
+    assert!(methods.contains_key(&Method::GET));
 }
