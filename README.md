@@ -138,6 +138,22 @@ let numbers = vec![1_u8, 2, 3];
 let widened: Vec<u16> = numbers.vec_into();
 ```
 
+## Poem OpenAPI
+
+Enable the `poem-openapi` feature to group Poem OpenAPI routes under a parent prefix.
+
+```toml
+corekit = { version = "0.1", features = ["poem-openapi"] }
+```
+
+```rust
+use corekit::route_group;
+
+pub fn api() -> impl poem_openapi::OpenApi {
+    route_group!("/todos", (TodoRoutes, TodoActivityRoutes))
+}
+```
+
 ## More Docs
 
 - [EnvConfig](docs/env-config.md)
@@ -146,3 +162,4 @@ let widened: Vec<u16> = numbers.vec_into();
 - [Retry](docs/retry.md)
 - [Timeout](docs/timeout.md)
 - [VecInto](docs/vec-into.md)
+- [Poem OpenAPI](docs/openapi.md)
