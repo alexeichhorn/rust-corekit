@@ -127,6 +127,17 @@ async fn call_api() -> Result<String, ApiError> {
 }
 ```
 
+## VecInto
+
+Use `VecInto` to convert every element in a vector through `Into`.
+
+```rust
+use corekit::prelude::*;
+
+let numbers = vec![1_u8, 2, 3];
+let widened: Vec<u16> = numbers.vec_into();
+```
+
 ## More Docs
 
 - [EnvConfig](docs/env-config.md)
@@ -134,3 +145,4 @@ async fn call_api() -> Result<String, ApiError> {
 - [SecretString](docs/secret-string.md)
 - [Retry](docs/retry.md)
 - [Timeout](docs/timeout.md)
+- [VecInto](docs/vec-into.md)
