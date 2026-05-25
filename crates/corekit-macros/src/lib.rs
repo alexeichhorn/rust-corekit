@@ -703,6 +703,8 @@ struct EnvField {
     ty: Type,
     env_name: String,
     mode: EnvFieldMode,
+    trim: bool,
+    non_empty: bool,
 }
 
 enum EnvFieldMode {
@@ -717,6 +719,8 @@ struct EnvFieldArgs {
     name: Option<String>,
     default: Option<Lit>,
     optional: Option<Path>,
+    trim: Option<Path>,
+    non_empty: Option<Path>,
 }
 
 fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
@@ -779,19 +783,12 @@ fn expand_env_config_impl(input: &DeriveInput, args: EnvConfigArgs) -> syn::Resu
     let field_loads = fields.iter().enumerate().map(|(index, field)| {
         let binding = format_ident!("__corekit_env_field_{index}");
         let env_name = &field.env_name;
-        let ty = field.parse_ty();
-        let present_value = field.present_value();
+        let present_load = field.present_load(quote! { value });
         let missing_value = field.missing_value();
 
         quote! {
             let #binding = match ::std::env::var(#env_name) {
-                Ok(value) => match value.parse::<#ty>() {
-                    Ok(value) => Some(#present_value),
-                    Err(_) => {
-                        errors.push(::corekit::EnvVarError::invalid(#env_name));
-                        None
-                    }
-                },
+                Ok(value) => #present_load,
                 Err(::std::env::VarError::NotPresent) => {
                     #missing_value
                 }
@@ -881,6 +878,43 @@ impl EnvField {
         }
     }
 
+    fn present_load(&self, raw_value: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        let ty = self.parse_ty();
+        let env_name = &self.env_name;
+        let present_value = self.present_value();
+        let value = if self.trim {
+            quote! { #raw_value.trim().to_owned() }
+        } else {
+            raw_value
+        };
+        let non_empty_check = if self.non_empty {
+            quote! {
+                if value.trim().is_empty() {
+                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    None
+                } else
+            }
+        } else {
+            quote! {}
+        };
+
+        quote! {
+            {
+                let value = #value;
+
+                #non_empty_check {
+                    match value.parse::<#ty>() {
+                        Ok(value) => Some(#present_value),
+                        Err(_) => {
+                            errors.push(::corekit::EnvVarError::invalid(#env_name));
+                            None
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn missing_value(&self) -> proc_macro2::TokenStream {
         let env_name = &self.env_name;
 
@@ -891,30 +925,8 @@ impl EnvField {
                     None
                 }
             }
-            EnvFieldMode::Default(default) => {
-                let ty = &self.ty;
-
-                quote! {
-                    match #default.to_string().parse::<#ty>() {
-                        Ok(value) => Some(value),
-                        Err(_) => {
-                            errors.push(::corekit::EnvVarError::invalid(#env_name));
-                            None
-                        }
-                    }
-                }
-            }
-            EnvFieldMode::DefaultOption(default, inner_ty) => {
-                quote! {
-                    match #default.to_string().parse::<#inner_ty>() {
-                        Ok(value) => Some(::std::option::Option::Some(value)),
-                        Err(_) => {
-                            errors.push(::corekit::EnvVarError::invalid(#env_name));
-                            None
-                        }
-                    }
-                }
-            }
+            EnvFieldMode::Default(default) => self.present_load(quote! { #default.to_string() }),
+            EnvFieldMode::DefaultOption(default, _inner_ty) => self.present_load(quote! { #default.to_string() }),
             EnvFieldMode::Optional(_) => quote! {
                 Some(::std::option::Option::None)
             },
@@ -1055,12 +1067,36 @@ fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
                 }
                 (None, None, None) => EnvFieldMode::Required,
             };
+            let parse_ty = match &mode {
+                EnvFieldMode::Required | EnvFieldMode::Default(_) => &field.ty,
+                EnvFieldMode::DefaultOption(_, inner_ty) | EnvFieldMode::Optional(inner_ty) => inner_ty,
+            };
+
+            if let Some(trim) = args.trim.as_ref() {
+                if !is_string_ty(parse_ty) {
+                    return Err(syn::Error::new_spanned(
+                        trim,
+                        "`#[env(trim)]` requires a `String` or `Option<String>` field",
+                    ));
+                }
+            }
+
+            if let Some(non_empty) = args.non_empty.as_ref() {
+                if !is_string_ty(parse_ty) {
+                    return Err(syn::Error::new_spanned(
+                        non_empty,
+                        "`#[env(non_empty)]` requires a `String` or `Option<String>` field",
+                    ));
+                }
+            }
 
             Ok(EnvField {
                 ident,
                 ty: field.ty.clone(),
                 env_name,
                 mode,
+                trim: args.trim.is_some(),
+                non_empty: args.non_empty.is_some(),
             })
         })
         .collect()
@@ -1098,6 +1134,12 @@ fn parse_env_field_args(field: &syn::Field) -> syn::Result<EnvFieldArgs> {
                 Meta::Path(path) if path.is_ident("optional") => {
                     args.optional = Some(path);
                 }
+                Meta::Path(path) if path.is_ident("trim") => {
+                    args.trim = Some(path);
+                }
+                Meta::Path(path) if path.is_ident("non_empty") => {
+                    args.non_empty = Some(path);
+                }
                 other => {
                     return Err(syn::Error::new_spanned(other, "unsupported `#[env]` argument"));
                 }
@@ -1127,6 +1169,14 @@ fn option_inner_ty(ty: &Type) -> Option<Type> {
     };
 
     Some(inner_ty.clone())
+}
+
+fn is_string_ty(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    type_path.path.segments.last().is_some_and(|segment| segment.ident == "String")
 }
 
 fn env_name_from_field_ident(ident: &Ident) -> String {

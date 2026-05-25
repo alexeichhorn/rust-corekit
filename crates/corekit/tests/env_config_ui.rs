@@ -27,6 +27,7 @@ fn main() -> ui_test::color_eyre::Result<()> {
         "env_config_name_override.rs".into(),
         "env_config_defaults.rs".into(),
         "env_config_optional.rs".into(),
+        "env_config_string_rules.rs".into(),
         "env_config_dotenv_options.rs".into(),
         "env_config_uppercase_fields.rs".into(),
         "fail_env_config_enum.rs".into(),
@@ -41,6 +42,8 @@ fn main() -> ui_test::color_eyre::Result<()> {
         "fail_env_config_duplicate_container_arg.rs".into(),
         "fail_env_config_default_non_literal.rs".into(),
         "fail_env_config_optional_non_option.rs".into(),
+        "fail_env_config_trim_non_string.rs".into(),
+        "fail_env_config_non_empty_non_string.rs".into(),
         "fail_env_config_unknown_container_arg.rs".into(),
         "fail_env_config_unknown_field_arg.rs".into(),
     ];

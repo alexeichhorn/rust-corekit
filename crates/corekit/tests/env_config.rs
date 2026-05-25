@@ -76,6 +76,27 @@ struct OptionalEnv {
 }
 
 #[derive(Debug, EnvConfig)]
+struct StringRulesEnv {
+    #[env(trim)]
+    corekit_string_trimmed: String,
+    #[env(non_empty)]
+    corekit_string_non_empty: String,
+    #[env(trim, non_empty)]
+    corekit_string_trimmed_non_empty: String,
+    #[env(trim, non_empty)]
+    corekit_string_optional: Option<String>,
+    #[env(default = "  fallback  ", trim, non_empty)]
+    corekit_string_default: String,
+}
+
+#[derive(Debug, EnvConfig)]
+#[allow(dead_code)]
+struct InvalidDefaultStringRulesEnv {
+    #[env(default = "   ", trim, non_empty)]
+    corekit_invalid_default_string: String,
+}
+
+#[derive(Debug, EnvConfig)]
 struct DotenvEnv {
     corekit_dotenv_database_url: String,
     corekit_dotenv_worker_count: u16,
@@ -397,6 +418,65 @@ fn present_invalid_option_values_fail() {
             assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
         },
     );
+}
+
+#[test]
+fn trim_and_non_empty_string_rules_are_explicit_and_composable() {
+    with_env(
+        &[
+            ("COREKIT_STRING_TRIMMED", Some("  trimmed  ")),
+            ("COREKIT_STRING_NON_EMPTY", Some("  kept  ")),
+            ("COREKIT_STRING_TRIMMED_NON_EMPTY", Some("  combined  ")),
+            ("COREKIT_STRING_OPTIONAL", Some("  optional  ")),
+            ("COREKIT_STRING_DEFAULT", None),
+        ],
+        || {
+            let config = StringRulesEnv::load().unwrap();
+
+            assert_eq!(config.corekit_string_trimmed, "trimmed");
+            assert_eq!(config.corekit_string_non_empty, "  kept  ");
+            assert_eq!(config.corekit_string_trimmed_non_empty, "combined");
+            assert_eq!(config.corekit_string_optional.as_deref(), Some("optional"));
+            assert_eq!(config.corekit_string_default, "fallback");
+        },
+    );
+}
+
+#[test]
+fn non_empty_rejects_empty_or_whitespace_only_string_values() {
+    with_env(
+        &[
+            ("COREKIT_STRING_TRIMMED", Some("")),
+            ("COREKIT_STRING_NON_EMPTY", Some("   ")),
+            ("COREKIT_STRING_TRIMMED_NON_EMPTY", Some("   ")),
+            ("COREKIT_STRING_OPTIONAL", Some("   ")),
+            ("COREKIT_STRING_DEFAULT", None),
+        ],
+        || {
+            let error = StringRulesEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 3);
+            assert_eq!(errors[0].name(), "COREKIT_STRING_NON_EMPTY");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[1].name(), "COREKIT_STRING_TRIMMED_NON_EMPTY");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[2].name(), "COREKIT_STRING_OPTIONAL");
+            assert_eq!(errors[2].kind(), EnvErrorKind::Invalid);
+        },
+    );
+}
+
+#[test]
+fn non_empty_rejects_whitespace_only_string_defaults() {
+    with_env(&[("COREKIT_INVALID_DEFAULT_STRING", None)], || {
+        let error = InvalidDefaultStringRulesEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_DEFAULT_STRING");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+    });
 }
 
 #[test]

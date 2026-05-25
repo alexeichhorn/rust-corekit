@@ -270,6 +270,27 @@ pub sentry_dsn: Option<String>,
 
 `Option<T>` should also imply optional.
 
+## String rules
+
+String env vars preserve the exact env value by default.
+
+```rust
+#[env(trim)]
+pub public_base_url: String,
+
+#[env(non_empty)]
+pub database_url: String,
+
+#[env(trim, non_empty)]
+pub sentry_dsn: Option<String>,
+```
+
+`trim` stores the trimmed string value.
+
+`non_empty` rejects empty and whitespace-only strings by checking `value.trim().is_empty()`.
+
+The rules should only apply to `String` and `Option<String>`.
+
 ## Supported types for v1
 
 - `String`
