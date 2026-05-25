@@ -121,6 +121,60 @@ pub REDIS_URL: Option<String>,
 
 If the env var is present but invalid, loading fails.
 
+## String Rules
+
+String fields keep the exact env value by default, including leading and trailing whitespace.
+
+Use `trim` when the loaded value should be trimmed before it is stored:
+
+```rust
+#[env(trim)]
+pub PUBLIC_BASE_URL: String,
+```
+
+Use `non_empty` when empty or whitespace-only values should be rejected:
+
+```rust
+#[env(non_empty)]
+pub DATABASE_URL: String,
+```
+
+The rules can be combined and also work with `Option<String>` and string defaults:
+
+```rust
+#[env(default = "info", trim, non_empty)]
+pub LOG_LEVEL: String,
+
+#[env(trim, non_empty)]
+pub SENTRY_DSN: Option<String>,
+```
+
+`non_empty` checks `value.trim().is_empty()`. Without `trim`, the stored value is still left unchanged.
+
+## Numeric Rules
+
+Integer and float fields can define inclusive bounds:
+
+```rust
+#[env(min = 1, max = 60)]
+pub REQUEST_TIMEOUT_SECONDS: u64,
+
+#[env(min = 0.0, max = 1.0)]
+pub SAMPLING_RATE: f64,
+```
+
+`min` and `max` also work with numeric `Option<T>` fields and numeric defaults. Missing optional values stay `None`.
+
+```rust
+#[env(min = 1024)]
+pub PORT: Option<u16>,
+
+#[env(default = 30, min = 1, max = 60)]
+pub REQUEST_TIMEOUT_SECONDS: u64,
+```
+
+Out-of-range values fail loading with an invalid env var error.
+
 ## Supported Types
 
 - `String`

@@ -6,7 +6,7 @@ use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::{
     parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemFn, ItemStruct, Lit, Meta,
-    Path, Token, Type, Visibility,
+    Path, Token, Type, UnOp, Visibility,
 };
 use syn::{GenericArgument, PathArguments};
 
@@ -703,6 +703,10 @@ struct EnvField {
     ty: Type,
     env_name: String,
     mode: EnvFieldMode,
+    trim: bool,
+    non_empty: bool,
+    min: Option<Expr>,
+    max: Option<Expr>,
 }
 
 enum EnvFieldMode {
@@ -717,6 +721,10 @@ struct EnvFieldArgs {
     name: Option<String>,
     default: Option<Lit>,
     optional: Option<Path>,
+    trim: Option<Path>,
+    non_empty: Option<Path>,
+    min: Option<Expr>,
+    max: Option<Expr>,
 }
 
 fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
@@ -779,24 +787,17 @@ fn expand_env_config_impl(input: &DeriveInput, args: EnvConfigArgs) -> syn::Resu
     let field_loads = fields.iter().enumerate().map(|(index, field)| {
         let binding = format_ident!("__corekit_env_field_{index}");
         let env_name = &field.env_name;
-        let ty = field.parse_ty();
-        let present_value = field.present_value();
+        let present_load = field.present_load(quote! { value });
         let missing_value = field.missing_value();
 
         quote! {
             let #binding = match ::std::env::var(#env_name) {
-                Ok(value) => match value.parse::<#ty>() {
-                    Ok(value) => Some(#present_value),
-                    Err(_) => {
-                        errors.push(::corekit::EnvVarError::invalid(#env_name));
-                        None
-                    }
-                },
+                Ok(value) => #present_load,
                 Err(::std::env::VarError::NotPresent) => {
                     #missing_value
                 }
                 Err(::std::env::VarError::NotUnicode(_)) => {
-                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    errors.push(::corekit::EnvVarError::invalid_not_unicode(#env_name));
                     None
                 }
             };
@@ -881,6 +882,81 @@ impl EnvField {
         }
     }
 
+    fn present_load(&self, raw_value: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        let ty = self.parse_ty();
+        let env_name = &self.env_name;
+        let present_value = self.present_value();
+        let expected_ty = quote! { ::std::stringify!(#ty) };
+        let value = if self.trim {
+            quote! { #raw_value.trim().to_owned() }
+        } else {
+            raw_value
+        };
+        let non_empty_check = if self.non_empty {
+            quote! {
+                if value.trim().is_empty() {
+                    errors.push(::corekit::EnvVarError::invalid_empty(#env_name));
+                    None
+                } else
+            }
+        } else {
+            quote! {}
+        };
+        let range_check = self.range_check();
+
+        quote! {
+            {
+                let value = #value;
+
+                #non_empty_check {
+                    match value.parse::<#ty>() {
+                        Ok(value) => #range_check {
+                            Some(#present_value)
+                        },
+                        Err(_) => {
+                            errors.push(::corekit::EnvVarError::invalid_parse(#env_name, #expected_ty));
+                            None
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn range_check(&self) -> proc_macro2::TokenStream {
+        let env_name = &self.env_name;
+        let nan_check = if self.min.is_some() || self.max.is_some() {
+            quote! {
+                if value.partial_cmp(&value).is_none() {
+                    errors.push(::corekit::EnvVarError::invalid_nan(#env_name));
+                    None
+                } else
+            }
+        } else {
+            quote! {}
+        };
+        let min_check = self.min.as_ref().map(|min| {
+            quote! {
+                if value < #min {
+                    errors.push(::corekit::EnvVarError::invalid_below_min(#env_name, (#min).to_string()));
+                    None
+                } else
+            }
+        });
+        let max_check = self.max.as_ref().map(|max| {
+            quote! {
+                if value > #max {
+                    errors.push(::corekit::EnvVarError::invalid_above_max(#env_name, (#max).to_string()));
+                    None
+                } else
+            }
+        });
+
+        quote! {
+            #nan_check #min_check #max_check
+        }
+    }
+
     fn missing_value(&self) -> proc_macro2::TokenStream {
         let env_name = &self.env_name;
 
@@ -891,30 +967,8 @@ impl EnvField {
                     None
                 }
             }
-            EnvFieldMode::Default(default) => {
-                let ty = &self.ty;
-
-                quote! {
-                    match #default.to_string().parse::<#ty>() {
-                        Ok(value) => Some(value),
-                        Err(_) => {
-                            errors.push(::corekit::EnvVarError::invalid(#env_name));
-                            None
-                        }
-                    }
-                }
-            }
-            EnvFieldMode::DefaultOption(default, inner_ty) => {
-                quote! {
-                    match #default.to_string().parse::<#inner_ty>() {
-                        Ok(value) => Some(::std::option::Option::Some(value)),
-                        Err(_) => {
-                            errors.push(::corekit::EnvVarError::invalid(#env_name));
-                            None
-                        }
-                    }
-                }
-            }
+            EnvFieldMode::Default(default) => self.present_load(quote! { #default.to_string() }),
+            EnvFieldMode::DefaultOption(default, _inner_ty) => self.present_load(quote! { #default.to_string() }),
             EnvFieldMode::Optional(_) => quote! {
                 Some(::std::option::Option::None)
             },
@@ -1055,12 +1109,56 @@ fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
                 }
                 (None, None, None) => EnvFieldMode::Required,
             };
+            let parse_ty = match &mode {
+                EnvFieldMode::Required | EnvFieldMode::Default(_) => &field.ty,
+                EnvFieldMode::DefaultOption(_, inner_ty) | EnvFieldMode::Optional(inner_ty) => inner_ty,
+            };
+
+            if let Some(trim) = args.trim.as_ref() {
+                if !is_string_ty(parse_ty) {
+                    return Err(syn::Error::new_spanned(
+                        trim,
+                        "`#[env(trim)]` requires a `String` or `Option<String>` field",
+                    ));
+                }
+            }
+
+            if let Some(non_empty) = args.non_empty.as_ref() {
+                if !is_string_ty(parse_ty) {
+                    return Err(syn::Error::new_spanned(
+                        non_empty,
+                        "`#[env(non_empty)]` requires a `String` or `Option<String>` field",
+                    ));
+                }
+            }
+
+            if let Some(min) = args.min.as_ref() {
+                if !is_numeric_ty(parse_ty) {
+                    return Err(syn::Error::new_spanned(
+                        min,
+                        "`#[env(min = ...)]` requires an integer or float field",
+                    ));
+                }
+            }
+
+            if let Some(max) = args.max.as_ref() {
+                if !is_numeric_ty(parse_ty) {
+                    return Err(syn::Error::new_spanned(
+                        max,
+                        "`#[env(max = ...)]` requires an integer or float field",
+                    ));
+                }
+            }
 
             Ok(EnvField {
                 ident,
                 ty: field.ty.clone(),
                 env_name,
                 mode,
+                trim: args.trim.is_some(),
+                non_empty: args.non_empty.is_some(),
+                min: args.min,
+                max: args.max,
             })
         })
         .collect()
@@ -1095,8 +1193,20 @@ fn parse_env_field_args(field: &syn::Field) -> syn::Result<EnvFieldArgs> {
                     };
                     args.default = Some(value);
                 }
+                Meta::NameValue(name_value) if name_value.path.is_ident("min") => {
+                    args.min = Some(parse_numeric_bound_expr(name_value.value, "min")?);
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("max") => {
+                    args.max = Some(parse_numeric_bound_expr(name_value.value, "max")?);
+                }
                 Meta::Path(path) if path.is_ident("optional") => {
                     args.optional = Some(path);
+                }
+                Meta::Path(path) if path.is_ident("trim") => {
+                    args.trim = Some(path);
+                }
+                Meta::Path(path) if path.is_ident("non_empty") => {
+                    args.non_empty = Some(path);
                 }
                 other => {
                     return Err(syn::Error::new_spanned(other, "unsupported `#[env]` argument"));
@@ -1106,6 +1216,28 @@ fn parse_env_field_args(field: &syn::Field) -> syn::Result<EnvFieldArgs> {
     }
 
     Ok(args)
+}
+
+fn parse_numeric_bound_expr(value: Expr, name: &str) -> syn::Result<Expr> {
+    if is_numeric_bound_expr(&value) {
+        return Ok(value);
+    }
+
+    Err(syn::Error::new_spanned(
+        value,
+        format!("`#[env({name} = ...)]` expects a numeric literal"),
+    ))
+}
+
+fn is_numeric_bound_expr(value: &Expr) -> bool {
+    match value {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(_) | Lit::Float(_),
+            ..
+        }) => true,
+        Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => is_numeric_bound_expr(&unary.expr),
+        _ => false,
+    }
 }
 
 fn option_inner_ty(ty: &Type) -> Option<Type> {
@@ -1127,6 +1259,27 @@ fn option_inner_ty(ty: &Type) -> Option<Type> {
     };
 
     Some(inner_ty.clone())
+}
+
+fn is_string_ty(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    type_path.path.segments.last().is_some_and(|segment| segment.ident == "String")
+}
+
+fn is_numeric_ty(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    type_path.path.segments.last().is_some_and(|segment| {
+        matches!(
+            segment.ident.to_string().as_str(),
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32" | "f64"
+        )
+    })
 }
 
 fn env_name_from_field_ident(ident: &Ident) -> String {

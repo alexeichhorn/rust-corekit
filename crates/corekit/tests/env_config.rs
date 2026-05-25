@@ -76,6 +76,61 @@ struct OptionalEnv {
 }
 
 #[derive(Debug, EnvConfig)]
+struct StringRulesEnv {
+    #[env(trim)]
+    corekit_string_trimmed: String,
+    #[env(non_empty)]
+    corekit_string_non_empty: String,
+    #[env(trim, non_empty)]
+    corekit_string_trimmed_non_empty: String,
+    #[env(trim, non_empty)]
+    corekit_string_optional: Option<String>,
+    #[env(default = "  fallback  ", trim, non_empty)]
+    corekit_string_default: String,
+}
+
+#[derive(Debug, EnvConfig)]
+#[allow(dead_code)]
+struct InvalidDefaultStringRulesEnv {
+    #[env(default = "   ", trim, non_empty)]
+    corekit_invalid_default_string: String,
+}
+
+#[derive(Debug, EnvConfig)]
+struct NumericRulesEnv {
+    #[env(min = 1, max = 10)]
+    corekit_numeric_worker_count: u16,
+    #[env(min = -2, max = 2)]
+    corekit_numeric_signed_limit: i32,
+    #[env(min = 0.5, max = 1.5)]
+    corekit_numeric_ratio: f64,
+    #[env(min = 1024)]
+    corekit_numeric_optional_port: Option<u32>,
+    #[env(default = 30, min = 1, max = 60)]
+    corekit_numeric_timeout_seconds: u64,
+}
+
+#[derive(Debug, EnvConfig)]
+#[allow(dead_code)]
+struct InvalidDefaultNumericRulesEnv {
+    #[env(default = 0, min = 1)]
+    corekit_invalid_default_numeric: u16,
+}
+
+#[derive(Debug, EnvConfig)]
+#[allow(dead_code)]
+struct AutomaticErrorMessagesEnv {
+    corekit_message_required: String,
+    corekit_message_worker_count: u16,
+    #[env(non_empty)]
+    corekit_message_non_empty: String,
+    #[env(min = 1, max = 10)]
+    corekit_message_min_count: u16,
+    #[env(min = 1, max = 10)]
+    corekit_message_max_count: u16,
+}
+
+#[derive(Debug, EnvConfig)]
 struct DotenvEnv {
     corekit_dotenv_database_url: String,
     corekit_dotenv_worker_count: u16,
@@ -395,6 +450,221 @@ fn present_invalid_option_values_fail() {
             assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
             assert_eq!(errors[1].name(), "COREKIT_OPTIONAL_FEATURE_ENABLED");
             assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+        },
+    );
+}
+
+#[test]
+fn trim_and_non_empty_string_rules_are_explicit_and_composable() {
+    with_env(
+        &[
+            ("COREKIT_STRING_TRIMMED", Some("  trimmed  ")),
+            ("COREKIT_STRING_NON_EMPTY", Some("  kept  ")),
+            ("COREKIT_STRING_TRIMMED_NON_EMPTY", Some("  combined  ")),
+            ("COREKIT_STRING_OPTIONAL", Some("  optional  ")),
+            ("COREKIT_STRING_DEFAULT", None),
+        ],
+        || {
+            let config = StringRulesEnv::load().unwrap();
+
+            assert_eq!(config.corekit_string_trimmed, "trimmed");
+            assert_eq!(config.corekit_string_non_empty, "  kept  ");
+            assert_eq!(config.corekit_string_trimmed_non_empty, "combined");
+            assert_eq!(config.corekit_string_optional.as_deref(), Some("optional"));
+            assert_eq!(config.corekit_string_default, "fallback");
+        },
+    );
+}
+
+#[test]
+fn non_empty_rejects_empty_or_whitespace_only_string_values() {
+    with_env(
+        &[
+            ("COREKIT_STRING_TRIMMED", Some("")),
+            ("COREKIT_STRING_NON_EMPTY", Some("   ")),
+            ("COREKIT_STRING_TRIMMED_NON_EMPTY", Some("   ")),
+            ("COREKIT_STRING_OPTIONAL", Some("   ")),
+            ("COREKIT_STRING_DEFAULT", None),
+        ],
+        || {
+            let error = StringRulesEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 3);
+            assert_eq!(errors[0].name(), "COREKIT_STRING_NON_EMPTY");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[1].name(), "COREKIT_STRING_TRIMMED_NON_EMPTY");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[2].name(), "COREKIT_STRING_OPTIONAL");
+            assert_eq!(errors[2].kind(), EnvErrorKind::Invalid);
+        },
+    );
+}
+
+#[test]
+fn non_empty_rejects_whitespace_only_string_defaults() {
+    with_env(&[("COREKIT_INVALID_DEFAULT_STRING", None)], || {
+        let error = InvalidDefaultStringRulesEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_DEFAULT_STRING");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+    });
+}
+
+#[test]
+fn numeric_min_and_max_rules_are_explicit_and_composable() {
+    with_env(
+        &[
+            ("COREKIT_NUMERIC_WORKER_COUNT", Some("10")),
+            ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("-2")),
+            ("COREKIT_NUMERIC_RATIO", Some("1.5")),
+            ("COREKIT_NUMERIC_OPTIONAL_PORT", Some("1024")),
+            ("COREKIT_NUMERIC_TIMEOUT_SECONDS", None),
+        ],
+        || {
+            let config = NumericRulesEnv::load().unwrap();
+
+            assert_eq!(config.corekit_numeric_worker_count, 10);
+            assert_eq!(config.corekit_numeric_signed_limit, -2);
+            assert_eq!(config.corekit_numeric_ratio, 1.5);
+            assert_eq!(config.corekit_numeric_optional_port, Some(1024));
+            assert_eq!(config.corekit_numeric_timeout_seconds, 30);
+        },
+    );
+}
+
+#[test]
+fn numeric_range_rules_reject_out_of_range_values() {
+    with_env(
+        &[
+            ("COREKIT_NUMERIC_WORKER_COUNT", Some("0")),
+            ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("3")),
+            ("COREKIT_NUMERIC_RATIO", Some("0.25")),
+            ("COREKIT_NUMERIC_OPTIONAL_PORT", Some("1023")),
+            ("COREKIT_NUMERIC_TIMEOUT_SECONDS", Some("61")),
+        ],
+        || {
+            let error = NumericRulesEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 5);
+            assert_eq!(errors[0].name(), "COREKIT_NUMERIC_WORKER_COUNT");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[1].name(), "COREKIT_NUMERIC_SIGNED_LIMIT");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[2].name(), "COREKIT_NUMERIC_RATIO");
+            assert_eq!(errors[2].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[3].name(), "COREKIT_NUMERIC_OPTIONAL_PORT");
+            assert_eq!(errors[3].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[4].name(), "COREKIT_NUMERIC_TIMEOUT_SECONDS");
+            assert_eq!(errors[4].kind(), EnvErrorKind::Invalid);
+        },
+    );
+}
+
+#[test]
+fn numeric_range_rules_reject_nan_float_values() {
+    with_env(
+        &[
+            ("COREKIT_NUMERIC_WORKER_COUNT", Some("1")),
+            ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("0")),
+            ("COREKIT_NUMERIC_RATIO", Some("NaN")),
+            ("COREKIT_NUMERIC_OPTIONAL_PORT", None),
+            ("COREKIT_NUMERIC_TIMEOUT_SECONDS", None),
+        ],
+        || {
+            let error = NumericRulesEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].name(), "COREKIT_NUMERIC_RATIO");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[0].reason(), "must not be NaN");
+        },
+    );
+}
+
+#[test]
+fn numeric_range_rules_skip_missing_option_values() {
+    with_env(
+        &[
+            ("COREKIT_NUMERIC_WORKER_COUNT", Some("1")),
+            ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("0")),
+            ("COREKIT_NUMERIC_RATIO", Some("1.0")),
+            ("COREKIT_NUMERIC_OPTIONAL_PORT", None),
+            ("COREKIT_NUMERIC_TIMEOUT_SECONDS", None),
+        ],
+        || {
+            let config = NumericRulesEnv::load().unwrap();
+
+            assert_eq!(config.corekit_numeric_optional_port, None);
+        },
+    );
+}
+
+#[test]
+fn numeric_range_rules_validate_defaults() {
+    with_env(&[("COREKIT_INVALID_DEFAULT_NUMERIC", None)], || {
+        let error = InvalidDefaultNumericRulesEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_DEFAULT_NUMERIC");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+    });
+}
+
+#[test]
+fn automatic_error_reasons_describe_failed_validation_cases() {
+    with_env(
+        &[
+            ("COREKIT_MESSAGE_REQUIRED", None),
+            ("COREKIT_MESSAGE_WORKER_COUNT", Some("not-a-u16")),
+            ("COREKIT_MESSAGE_NON_EMPTY", Some("   ")),
+            ("COREKIT_MESSAGE_MIN_COUNT", Some("0")),
+            ("COREKIT_MESSAGE_MAX_COUNT", Some("11")),
+        ],
+        || {
+            let error = AutomaticErrorMessagesEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 5);
+            assert_eq!(errors[0].name(), "COREKIT_MESSAGE_REQUIRED");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Missing);
+            assert_eq!(errors[0].reason(), "missing required env var");
+            assert_eq!(errors[1].name(), "COREKIT_MESSAGE_WORKER_COUNT");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[1].reason(), "invalid value, expected u16");
+            assert_eq!(errors[2].name(), "COREKIT_MESSAGE_NON_EMPTY");
+            assert_eq!(errors[2].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[2].reason(), "must not be empty or whitespace only");
+            assert_eq!(errors[3].name(), "COREKIT_MESSAGE_MIN_COUNT");
+            assert_eq!(errors[3].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[3].reason(), "must be greater than or equal to 1");
+            assert_eq!(errors[4].name(), "COREKIT_MESSAGE_MAX_COUNT");
+            assert_eq!(errors[4].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[4].reason(), "must be less than or equal to 10");
+        },
+    );
+}
+
+#[test]
+fn error_display_lists_names_with_automatic_reasons() {
+    with_env(
+        &[
+            ("COREKIT_MESSAGE_REQUIRED", None),
+            ("COREKIT_MESSAGE_WORKER_COUNT", Some("not-a-u16")),
+            ("COREKIT_MESSAGE_NON_EMPTY", Some("value")),
+            ("COREKIT_MESSAGE_MIN_COUNT", Some("1")),
+            ("COREKIT_MESSAGE_MAX_COUNT", Some("10")),
+        ],
+        || {
+            let message = AutomaticErrorMessagesEnv::load().unwrap_err().to_string();
+
+            assert!(message.contains("COREKIT_MESSAGE_REQUIRED: missing required env var"));
+            assert!(message.contains("COREKIT_MESSAGE_WORKER_COUNT: invalid value, expected u16"));
         },
     );
 }
