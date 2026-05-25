@@ -925,6 +925,16 @@ impl EnvField {
 
     fn range_check(&self) -> proc_macro2::TokenStream {
         let env_name = &self.env_name;
+        let nan_check = if self.min.is_some() || self.max.is_some() {
+            quote! {
+                if value.partial_cmp(&value).is_none() {
+                    errors.push(::corekit::EnvVarError::invalid_nan(#env_name));
+                    None
+                } else
+            }
+        } else {
+            quote! {}
+        };
         let min_check = self.min.as_ref().map(|min| {
             quote! {
                 if value < #min {
@@ -943,7 +953,7 @@ impl EnvField {
         });
 
         quote! {
-            #min_check #max_check
+            #nan_check #min_check #max_check
         }
     }
 

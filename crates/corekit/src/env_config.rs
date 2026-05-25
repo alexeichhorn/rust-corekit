@@ -56,6 +56,10 @@ impl EnvVarError {
         Self::invalid_with_reason(name, "must not be empty or whitespace only")
     }
 
+    pub fn invalid_nan(name: impl Into<String>) -> Self {
+        Self::invalid_with_reason(name, "must not be NaN")
+    }
+
     pub fn invalid_below_min(name: impl Into<String>, min: impl fmt::Display) -> Self {
         Self::invalid_with_reason(name, format!("must be greater than or equal to {min}"))
     }

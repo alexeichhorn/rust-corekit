@@ -565,6 +565,28 @@ fn numeric_range_rules_reject_out_of_range_values() {
 }
 
 #[test]
+fn numeric_range_rules_reject_nan_float_values() {
+    with_env(
+        &[
+            ("COREKIT_NUMERIC_WORKER_COUNT", Some("1")),
+            ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("0")),
+            ("COREKIT_NUMERIC_RATIO", Some("NaN")),
+            ("COREKIT_NUMERIC_OPTIONAL_PORT", None),
+            ("COREKIT_NUMERIC_TIMEOUT_SECONDS", None),
+        ],
+        || {
+            let error = NumericRulesEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].name(), "COREKIT_NUMERIC_RATIO");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[0].reason(), "must not be NaN");
+        },
+    );
+}
+
+#[test]
 fn numeric_range_rules_skip_missing_option_values() {
     with_env(
         &[
