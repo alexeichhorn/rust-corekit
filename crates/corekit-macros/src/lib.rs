@@ -797,7 +797,7 @@ fn expand_env_config_impl(input: &DeriveInput, args: EnvConfigArgs) -> syn::Resu
                     #missing_value
                 }
                 Err(::std::env::VarError::NotUnicode(_)) => {
-                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    errors.push(::corekit::EnvVarError::invalid_not_unicode(#env_name));
                     None
                 }
             };
@@ -886,6 +886,7 @@ impl EnvField {
         let ty = self.parse_ty();
         let env_name = &self.env_name;
         let present_value = self.present_value();
+        let expected_ty = quote! { ::std::stringify!(#ty) };
         let value = if self.trim {
             quote! { #raw_value.trim().to_owned() }
         } else {
@@ -894,7 +895,7 @@ impl EnvField {
         let non_empty_check = if self.non_empty {
             quote! {
                 if value.trim().is_empty() {
-                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    errors.push(::corekit::EnvVarError::invalid_empty(#env_name));
                     None
                 } else
             }
@@ -913,7 +914,7 @@ impl EnvField {
                             Some(#present_value)
                         },
                         Err(_) => {
-                            errors.push(::corekit::EnvVarError::invalid(#env_name));
+                            errors.push(::corekit::EnvVarError::invalid_parse(#env_name, #expected_ty));
                             None
                         }
                     }
@@ -927,7 +928,7 @@ impl EnvField {
         let min_check = self.min.as_ref().map(|min| {
             quote! {
                 if value < #min {
-                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    errors.push(::corekit::EnvVarError::invalid_below_min(#env_name, (#min).to_string()));
                     None
                 } else
             }
@@ -935,7 +936,7 @@ impl EnvField {
         let max_check = self.max.as_ref().map(|max| {
             quote! {
                 if value > #max {
-                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    errors.push(::corekit::EnvVarError::invalid_above_max(#env_name, (#max).to_string()));
                     None
                 } else
             }

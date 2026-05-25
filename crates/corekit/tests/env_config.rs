@@ -118,6 +118,19 @@ struct InvalidDefaultNumericRulesEnv {
 }
 
 #[derive(Debug, EnvConfig)]
+#[allow(dead_code)]
+struct AutomaticErrorMessagesEnv {
+    corekit_message_required: String,
+    corekit_message_worker_count: u16,
+    #[env(non_empty)]
+    corekit_message_non_empty: String,
+    #[env(min = 1, max = 10)]
+    corekit_message_min_count: u16,
+    #[env(min = 1, max = 10)]
+    corekit_message_max_count: u16,
+}
+
+#[derive(Debug, EnvConfig)]
 struct DotenvEnv {
     corekit_dotenv_database_url: String,
     corekit_dotenv_worker_count: u16,
@@ -579,6 +592,59 @@ fn numeric_range_rules_validate_defaults() {
         assert_eq!(errors[0].name(), "COREKIT_INVALID_DEFAULT_NUMERIC");
         assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
     });
+}
+
+#[test]
+fn automatic_error_reasons_describe_failed_validation_cases() {
+    with_env(
+        &[
+            ("COREKIT_MESSAGE_REQUIRED", None),
+            ("COREKIT_MESSAGE_WORKER_COUNT", Some("not-a-u16")),
+            ("COREKIT_MESSAGE_NON_EMPTY", Some("   ")),
+            ("COREKIT_MESSAGE_MIN_COUNT", Some("0")),
+            ("COREKIT_MESSAGE_MAX_COUNT", Some("11")),
+        ],
+        || {
+            let error = AutomaticErrorMessagesEnv::load().unwrap_err();
+            let errors = error.errors();
+
+            assert_eq!(errors.len(), 5);
+            assert_eq!(errors[0].name(), "COREKIT_MESSAGE_REQUIRED");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Missing);
+            assert_eq!(errors[0].reason(), "missing required env var");
+            assert_eq!(errors[1].name(), "COREKIT_MESSAGE_WORKER_COUNT");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[1].reason(), "invalid value, expected u16");
+            assert_eq!(errors[2].name(), "COREKIT_MESSAGE_NON_EMPTY");
+            assert_eq!(errors[2].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[2].reason(), "must not be empty or whitespace only");
+            assert_eq!(errors[3].name(), "COREKIT_MESSAGE_MIN_COUNT");
+            assert_eq!(errors[3].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[3].reason(), "must be greater than or equal to 1");
+            assert_eq!(errors[4].name(), "COREKIT_MESSAGE_MAX_COUNT");
+            assert_eq!(errors[4].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[4].reason(), "must be less than or equal to 10");
+        },
+    );
+}
+
+#[test]
+fn error_display_lists_names_with_automatic_reasons() {
+    with_env(
+        &[
+            ("COREKIT_MESSAGE_REQUIRED", None),
+            ("COREKIT_MESSAGE_WORKER_COUNT", Some("not-a-u16")),
+            ("COREKIT_MESSAGE_NON_EMPTY", Some("value")),
+            ("COREKIT_MESSAGE_MIN_COUNT", Some("1")),
+            ("COREKIT_MESSAGE_MAX_COUNT", Some("10")),
+        ],
+        || {
+            let message = AutomaticErrorMessagesEnv::load().unwrap_err().to_string();
+
+            assert!(message.contains("COREKIT_MESSAGE_REQUIRED: missing required env var"));
+            assert!(message.contains("COREKIT_MESSAGE_WORKER_COUNT: invalid value, expected u16"));
+        },
+    );
 }
 
 #[test]
