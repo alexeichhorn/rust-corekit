@@ -6,7 +6,7 @@ use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::{
     parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprLit, ExprPath, Fields, Generics, Ident, Item, ItemFn, ItemStruct, Lit, Meta,
-    Path, Token, Type, Visibility,
+    Path, Token, Type, UnOp, Visibility,
 };
 use syn::{GenericArgument, PathArguments};
 
@@ -705,6 +705,8 @@ struct EnvField {
     mode: EnvFieldMode,
     trim: bool,
     non_empty: bool,
+    min: Option<Expr>,
+    max: Option<Expr>,
 }
 
 enum EnvFieldMode {
@@ -721,6 +723,8 @@ struct EnvFieldArgs {
     optional: Option<Path>,
     trim: Option<Path>,
     non_empty: Option<Path>,
+    min: Option<Expr>,
+    max: Option<Expr>,
 }
 
 fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
@@ -897,6 +901,7 @@ impl EnvField {
         } else {
             quote! {}
         };
+        let range_check = self.range_check();
 
         quote! {
             {
@@ -904,7 +909,9 @@ impl EnvField {
 
                 #non_empty_check {
                     match value.parse::<#ty>() {
-                        Ok(value) => Some(#present_value),
+                        Ok(value) => #range_check {
+                            Some(#present_value)
+                        },
                         Err(_) => {
                             errors.push(::corekit::EnvVarError::invalid(#env_name));
                             None
@@ -912,6 +919,30 @@ impl EnvField {
                     }
                 }
             }
+        }
+    }
+
+    fn range_check(&self) -> proc_macro2::TokenStream {
+        let env_name = &self.env_name;
+        let min_check = self.min.as_ref().map(|min| {
+            quote! {
+                if value < #min {
+                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    None
+                } else
+            }
+        });
+        let max_check = self.max.as_ref().map(|max| {
+            quote! {
+                if value > #max {
+                    errors.push(::corekit::EnvVarError::invalid(#env_name));
+                    None
+                } else
+            }
+        });
+
+        quote! {
+            #min_check #max_check
         }
     }
 
@@ -1090,6 +1121,24 @@ fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
                 }
             }
 
+            if let Some(min) = args.min.as_ref() {
+                if !is_numeric_ty(parse_ty) {
+                    return Err(syn::Error::new_spanned(
+                        min,
+                        "`#[env(min = ...)]` requires an integer or float field",
+                    ));
+                }
+            }
+
+            if let Some(max) = args.max.as_ref() {
+                if !is_numeric_ty(parse_ty) {
+                    return Err(syn::Error::new_spanned(
+                        max,
+                        "`#[env(max = ...)]` requires an integer or float field",
+                    ));
+                }
+            }
+
             Ok(EnvField {
                 ident,
                 ty: field.ty.clone(),
@@ -1097,6 +1146,8 @@ fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
                 mode,
                 trim: args.trim.is_some(),
                 non_empty: args.non_empty.is_some(),
+                min: args.min,
+                max: args.max,
             })
         })
         .collect()
@@ -1131,6 +1182,12 @@ fn parse_env_field_args(field: &syn::Field) -> syn::Result<EnvFieldArgs> {
                     };
                     args.default = Some(value);
                 }
+                Meta::NameValue(name_value) if name_value.path.is_ident("min") => {
+                    args.min = Some(parse_numeric_bound_expr(name_value.value, "min")?);
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("max") => {
+                    args.max = Some(parse_numeric_bound_expr(name_value.value, "max")?);
+                }
                 Meta::Path(path) if path.is_ident("optional") => {
                     args.optional = Some(path);
                 }
@@ -1148,6 +1205,28 @@ fn parse_env_field_args(field: &syn::Field) -> syn::Result<EnvFieldArgs> {
     }
 
     Ok(args)
+}
+
+fn parse_numeric_bound_expr(value: Expr, name: &str) -> syn::Result<Expr> {
+    if is_numeric_bound_expr(&value) {
+        return Ok(value);
+    }
+
+    Err(syn::Error::new_spanned(
+        value,
+        format!("`#[env({name} = ...)]` expects a numeric literal"),
+    ))
+}
+
+fn is_numeric_bound_expr(value: &Expr) -> bool {
+    match value {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(_) | Lit::Float(_),
+            ..
+        }) => true,
+        Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => is_numeric_bound_expr(&unary.expr),
+        _ => false,
+    }
 }
 
 fn option_inner_ty(ty: &Type) -> Option<Type> {
@@ -1177,6 +1256,19 @@ fn is_string_ty(ty: &Type) -> bool {
     };
 
     type_path.path.segments.last().is_some_and(|segment| segment.ident == "String")
+}
+
+fn is_numeric_ty(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    type_path.path.segments.last().is_some_and(|segment| {
+        matches!(
+            segment.ident.to_string().as_str(),
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32" | "f64"
+        )
+    })
 }
 
 fn env_name_from_field_ident(ident: &Ident) -> String {

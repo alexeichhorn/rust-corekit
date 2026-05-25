@@ -291,6 +291,25 @@ pub sentry_dsn: Option<String>,
 
 The rules should only apply to `String` and `Option<String>`.
 
+## Numeric rules
+
+Integer and float env vars can define inclusive bounds.
+
+```rust
+#[env(min = 1, max = 60)]
+pub request_timeout_seconds: u64,
+
+#[env(min = 0.0, max = 1.0)]
+pub sampling_rate: f64,
+
+#[env(min = 1024)]
+pub port: Option<u16>,
+```
+
+`min` and `max` should also validate numeric defaults.
+
+The rules should only apply to primitive integer and float fields, including `Option<T>` for those types.
+
 ## Supported types for v1
 
 - `String`
