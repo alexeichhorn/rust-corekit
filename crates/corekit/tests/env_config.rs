@@ -617,16 +617,22 @@ fn numeric_range_rules_skip_missing_option_values() {
 
 #[test]
 fn numeric_range_rules_validate_defaults() {
-    with_env(&[("COREKIT_INVALID_DEFAULT_NUMERIC", None)], || {
-        let error = InvalidDefaultNumericRulesEnv::load().unwrap_err();
-        let errors = error.errors();
+    with_env(
+        &[
+            ("COREKIT_INVALID_DEFAULT_NUMERIC", None),
+            ("COREKIT_INVALID_DEFAULT_NUMERIC_USIZE", None),
+        ],
+        || {
+            let error = InvalidDefaultNumericRulesEnv::load().unwrap_err();
+            let errors = error.errors();
 
-        assert_eq!(errors.len(), 2);
-        assert_eq!(errors[0].name(), "COREKIT_INVALID_DEFAULT_NUMERIC");
-        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
-        assert_eq!(errors[1].name(), "COREKIT_INVALID_DEFAULT_NUMERIC_USIZE");
-        assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
-    });
+            assert_eq!(errors.len(), 2);
+            assert_eq!(errors[0].name(), "COREKIT_INVALID_DEFAULT_NUMERIC");
+            assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[1].name(), "COREKIT_INVALID_DEFAULT_NUMERIC_USIZE");
+            assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
+        },
+    );
 }
 
 #[test]
