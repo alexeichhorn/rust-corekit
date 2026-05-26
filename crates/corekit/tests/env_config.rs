@@ -100,6 +100,8 @@ struct InvalidDefaultStringRulesEnv {
 struct NumericRulesEnv {
     #[env(min = 1, max = 10)]
     corekit_numeric_worker_count: u16,
+    #[env(min = 1, max = 8)]
+    corekit_numeric_thread_limit: usize,
     #[env(min = -2, max = 2)]
     corekit_numeric_signed_limit: i32,
     #[env(min = 0.5, max = 1.5)]
@@ -115,6 +117,8 @@ struct NumericRulesEnv {
 struct InvalidDefaultNumericRulesEnv {
     #[env(default = 0, min = 1)]
     corekit_invalid_default_numeric: u16,
+    #[env(default = 0, min = 1)]
+    corekit_invalid_default_numeric_usize: usize,
 }
 
 #[derive(Debug, EnvConfig)]
@@ -518,6 +522,7 @@ fn numeric_min_and_max_rules_are_explicit_and_composable() {
     with_env(
         &[
             ("COREKIT_NUMERIC_WORKER_COUNT", Some("10")),
+            ("COREKIT_NUMERIC_THREAD_LIMIT", Some("8")),
             ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("-2")),
             ("COREKIT_NUMERIC_RATIO", Some("1.5")),
             ("COREKIT_NUMERIC_OPTIONAL_PORT", Some("1024")),
@@ -527,6 +532,7 @@ fn numeric_min_and_max_rules_are_explicit_and_composable() {
             let config = NumericRulesEnv::load().unwrap();
 
             assert_eq!(config.corekit_numeric_worker_count, 10);
+            assert_eq!(config.corekit_numeric_thread_limit, 8);
             assert_eq!(config.corekit_numeric_signed_limit, -2);
             assert_eq!(config.corekit_numeric_ratio, 1.5);
             assert_eq!(config.corekit_numeric_optional_port, Some(1024));
@@ -540,6 +546,7 @@ fn numeric_range_rules_reject_out_of_range_values() {
     with_env(
         &[
             ("COREKIT_NUMERIC_WORKER_COUNT", Some("0")),
+            ("COREKIT_NUMERIC_THREAD_LIMIT", Some("9")),
             ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("3")),
             ("COREKIT_NUMERIC_RATIO", Some("0.25")),
             ("COREKIT_NUMERIC_OPTIONAL_PORT", Some("1023")),
@@ -549,17 +556,19 @@ fn numeric_range_rules_reject_out_of_range_values() {
             let error = NumericRulesEnv::load().unwrap_err();
             let errors = error.errors();
 
-            assert_eq!(errors.len(), 5);
+            assert_eq!(errors.len(), 6);
             assert_eq!(errors[0].name(), "COREKIT_NUMERIC_WORKER_COUNT");
             assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
-            assert_eq!(errors[1].name(), "COREKIT_NUMERIC_SIGNED_LIMIT");
+            assert_eq!(errors[1].name(), "COREKIT_NUMERIC_THREAD_LIMIT");
             assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
-            assert_eq!(errors[2].name(), "COREKIT_NUMERIC_RATIO");
+            assert_eq!(errors[2].name(), "COREKIT_NUMERIC_SIGNED_LIMIT");
             assert_eq!(errors[2].kind(), EnvErrorKind::Invalid);
-            assert_eq!(errors[3].name(), "COREKIT_NUMERIC_OPTIONAL_PORT");
+            assert_eq!(errors[3].name(), "COREKIT_NUMERIC_RATIO");
             assert_eq!(errors[3].kind(), EnvErrorKind::Invalid);
-            assert_eq!(errors[4].name(), "COREKIT_NUMERIC_TIMEOUT_SECONDS");
+            assert_eq!(errors[4].name(), "COREKIT_NUMERIC_OPTIONAL_PORT");
             assert_eq!(errors[4].kind(), EnvErrorKind::Invalid);
+            assert_eq!(errors[5].name(), "COREKIT_NUMERIC_TIMEOUT_SECONDS");
+            assert_eq!(errors[5].kind(), EnvErrorKind::Invalid);
         },
     );
 }
@@ -569,6 +578,7 @@ fn numeric_range_rules_reject_nan_float_values() {
     with_env(
         &[
             ("COREKIT_NUMERIC_WORKER_COUNT", Some("1")),
+            ("COREKIT_NUMERIC_THREAD_LIMIT", Some("1")),
             ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("0")),
             ("COREKIT_NUMERIC_RATIO", Some("NaN")),
             ("COREKIT_NUMERIC_OPTIONAL_PORT", None),
@@ -591,6 +601,7 @@ fn numeric_range_rules_skip_missing_option_values() {
     with_env(
         &[
             ("COREKIT_NUMERIC_WORKER_COUNT", Some("1")),
+            ("COREKIT_NUMERIC_THREAD_LIMIT", Some("1")),
             ("COREKIT_NUMERIC_SIGNED_LIMIT", Some("0")),
             ("COREKIT_NUMERIC_RATIO", Some("1.0")),
             ("COREKIT_NUMERIC_OPTIONAL_PORT", None),
@@ -610,9 +621,11 @@ fn numeric_range_rules_validate_defaults() {
         let error = InvalidDefaultNumericRulesEnv::load().unwrap_err();
         let errors = error.errors();
 
-        assert_eq!(errors.len(), 1);
+        assert_eq!(errors.len(), 2);
         assert_eq!(errors[0].name(), "COREKIT_INVALID_DEFAULT_NUMERIC");
         assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+        assert_eq!(errors[1].name(), "COREKIT_INVALID_DEFAULT_NUMERIC_USIZE");
+        assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
     });
 }
 
