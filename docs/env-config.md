@@ -151,6 +151,26 @@ pub SENTRY_DSN: Option<String>,
 
 `non_empty` checks `value.trim().is_empty()`. Without `trim`, the stored value is still left unchanged.
 
+## Vector Rules
+
+`Vec<T>` and `Option<Vec<T>>` fields are parsed from comma-separated env values. Each item is parsed as `T` with `FromStr`.
+
+```rust
+#[env(trim, filter_empty, non_empty)]
+pub ALLOWED_ORIGINS: Vec<String>,
+
+#[env(trim, filter_empty, each_min = 1, each_max = 65535, min_length = 1)]
+pub PORTS: Vec<u16>,
+```
+
+`trim` trims each CSV item before parsing. `filter_empty` drops empty or whitespace-only items before parsing.
+
+For vector fields, `non_empty` validates that the final vector contains at least one item. `min_length` and `max_length` validate the final vector length.
+
+Use `each_min` and `each_max` for per-item numeric bounds. Scalar `min` and `max` remain scalar-only and are not valid on vector fields.
+
+CSV parsing is intentionally simple: values are split on commas without quoted-field or escape handling. Good item types are `String`, `bool`, integer and float types, `SecretString`, and custom types that implement `FromStr` without needing commas in the input syntax.
+
 ## Numeric Rules
 
 Integer and float fields can define inclusive bounds:
@@ -183,6 +203,7 @@ Out-of-range values fail loading with an invalid env var error.
 - `String`
 - `bool`
 - integer and float types, including `usize`
+- `Vec<T>` for comma-separated values where `T` implements `FromStr`
 - `Option<T>`
 - custom types implementing `FromStr`
 - `SecretString`

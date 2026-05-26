@@ -56,6 +56,10 @@ impl EnvVarError {
         Self::invalid_with_reason(name, "must not be empty or whitespace only")
     }
 
+    pub fn invalid_empty_list(name: impl Into<String>) -> Self {
+        Self::invalid_with_reason(name, "must contain at least one item")
+    }
+
     pub fn invalid_nan(name: impl Into<String>) -> Self {
         Self::invalid_with_reason(name, "must not be NaN")
     }
@@ -66,6 +70,14 @@ impl EnvVarError {
 
     pub fn invalid_above_max(name: impl Into<String>, max: impl fmt::Display) -> Self {
         Self::invalid_with_reason(name, format!("must be less than or equal to {max}"))
+    }
+
+    pub fn invalid_below_min_length(name: impl Into<String>, min_length: impl fmt::Display) -> Self {
+        Self::invalid_with_reason(name, format!("must contain at least {min_length} items"))
+    }
+
+    pub fn invalid_above_max_length(name: impl Into<String>, max_length: impl fmt::Display) -> Self {
+        Self::invalid_with_reason(name, format!("must contain at most {max_length} items"))
     }
 
     fn invalid_with_reason(name: impl Into<String>, reason: impl Into<String>) -> Self {

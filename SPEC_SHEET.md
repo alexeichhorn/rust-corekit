@@ -316,13 +316,13 @@ The rules should only apply to primitive integer and float fields, including `Op
 - `bool`
 - integer types
 - float types
+- `Vec<T>` from simple comma-separated values where `T` implements `FromStr`
 - `Option<T>`
 - custom types implementing `FromStr`
 - `SecretString`
 
 Later possible additions:
 
-- `Vec<String>`
 - JSON values
 - custom structs from JSON env vars
 

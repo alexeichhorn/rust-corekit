@@ -705,8 +705,13 @@ struct EnvField {
     mode: EnvFieldMode,
     trim: bool,
     non_empty: bool,
+    filter_empty: bool,
     min: Option<Expr>,
     max: Option<Expr>,
+    each_min: Option<Expr>,
+    each_max: Option<Expr>,
+    min_length: Option<usize>,
+    max_length: Option<usize>,
 }
 
 enum EnvFieldMode {
@@ -723,8 +728,13 @@ struct EnvFieldArgs {
     optional: Option<Path>,
     trim: Option<Path>,
     non_empty: Option<Path>,
+    filter_empty: Option<Path>,
     min: Option<Expr>,
     max: Option<Expr>,
+    each_min: Option<Expr>,
+    each_max: Option<Expr>,
+    min_length: Option<(Path, usize)>,
+    max_length: Option<(Path, usize)>,
 }
 
 fn expand_env_config(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
@@ -884,6 +894,10 @@ impl EnvField {
 
     fn present_load(&self, raw_value: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
         let ty = self.parse_ty();
+        if let Some(item_ty) = vec_inner_ty(ty) {
+            return self.present_vec_load(raw_value, item_ty);
+        }
+
         let env_name = &self.env_name;
         let present_value = self.present_value();
         let expected_ty = quote! { ::std::stringify!(#ty) };
@@ -923,6 +937,69 @@ impl EnvField {
         }
     }
 
+    fn present_vec_load(&self, raw_value: proc_macro2::TokenStream, item_ty: Type) -> proc_macro2::TokenStream {
+        let env_name = &self.env_name;
+        let present_value = self.present_value();
+        let expected_ty = quote! { ::std::stringify!(#item_ty) };
+        let item_value = if self.trim {
+            quote! { __corekit_env_part.trim() }
+        } else {
+            quote! { __corekit_env_part }
+        };
+        let filter_empty_check = if self.filter_empty {
+            quote! {
+                if __corekit_env_part.trim().is_empty() {
+                    continue;
+                }
+            }
+        } else {
+            quote! {}
+        };
+        let item_range_check = self.item_range_check();
+        let length_check = self.length_check();
+
+        quote! {
+            {
+                let __corekit_env_raw_value = #raw_value;
+                let mut value = ::std::vec::Vec::new();
+                let mut __corekit_env_valid = true;
+
+                for __corekit_env_part in __corekit_env_raw_value.split(',') {
+                    #filter_empty_check
+
+                    match #item_value.parse::<#item_ty>() {
+                        Ok(__corekit_env_item) => {
+                            let __corekit_env_item_valid = {
+                                let value = &__corekit_env_item;
+                                #item_range_check {
+                                    true
+                                }
+                            };
+
+                            if __corekit_env_item_valid {
+                                value.push(__corekit_env_item);
+                            } else {
+                                __corekit_env_valid = false;
+                            }
+                        }
+                        Err(_) => {
+                            errors.push(::corekit::EnvVarError::invalid_parse(#env_name, #expected_ty));
+                            __corekit_env_valid = false;
+                        }
+                    }
+                }
+
+                if __corekit_env_valid {
+                    #length_check {
+                        Some(#present_value)
+                    }
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     fn range_check(&self) -> proc_macro2::TokenStream {
         let env_name = &self.env_name;
         let nan_check = if self.min.is_some() || self.max.is_some() {
@@ -954,6 +1031,74 @@ impl EnvField {
 
         quote! {
             #nan_check #min_check #max_check
+        }
+    }
+
+    fn item_range_check(&self) -> proc_macro2::TokenStream {
+        let env_name = &self.env_name;
+        let nan_check = if self.each_min.is_some() || self.each_max.is_some() {
+            quote! {
+                if value.partial_cmp(value).is_none() {
+                    errors.push(::corekit::EnvVarError::invalid_nan(#env_name));
+                    false
+                } else
+            }
+        } else {
+            quote! {}
+        };
+        let min_check = self.each_min.as_ref().map(|min| {
+            quote! {
+                if *value < #min {
+                    errors.push(::corekit::EnvVarError::invalid_below_min(#env_name, (#min).to_string()));
+                    false
+                } else
+            }
+        });
+        let max_check = self.each_max.as_ref().map(|max| {
+            quote! {
+                if *value > #max {
+                    errors.push(::corekit::EnvVarError::invalid_above_max(#env_name, (#max).to_string()));
+                    false
+                } else
+            }
+        });
+
+        quote! {
+            #nan_check #min_check #max_check
+        }
+    }
+
+    fn length_check(&self) -> proc_macro2::TokenStream {
+        let env_name = &self.env_name;
+        let non_empty_check = if self.non_empty {
+            quote! {
+                if value.is_empty() {
+                    errors.push(::corekit::EnvVarError::invalid_empty_list(#env_name));
+                    None
+                } else
+            }
+        } else {
+            quote! {}
+        };
+        let min_length_check = self.min_length.as_ref().map(|min_length| {
+            quote! {
+                if value.len() < #min_length {
+                    errors.push(::corekit::EnvVarError::invalid_below_min_length(#env_name, #min_length));
+                    None
+                } else
+            }
+        });
+        let max_length_check = self.max_length.as_ref().map(|max_length| {
+            quote! {
+                if value.len() > #max_length {
+                    errors.push(::corekit::EnvVarError::invalid_above_max_length(#env_name, #max_length));
+                    None
+                } else
+            }
+        });
+
+        quote! {
+            #non_empty_check #min_length_check #max_length_check
         }
     }
 
@@ -1113,21 +1258,32 @@ fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
                 EnvFieldMode::Required | EnvFieldMode::Default(_) => &field.ty,
                 EnvFieldMode::DefaultOption(_, inner_ty) | EnvFieldMode::Optional(inner_ty) => inner_ty,
             };
+            let vec_inner_ty = vec_inner_ty(parse_ty);
+            let item_ty = vec_inner_ty.as_ref().unwrap_or(parse_ty);
 
             if let Some(trim) = args.trim.as_ref() {
-                if !is_string_ty(parse_ty) {
+                if !is_string_ty(parse_ty) && vec_inner_ty.is_none() {
                     return Err(syn::Error::new_spanned(
                         trim,
-                        "`#[env(trim)]` requires a `String` or `Option<String>` field",
+                        "`#[env(trim)]` requires a `String`, `Option<String>`, `Vec<T>`, or `Option<Vec<T>>` field",
                     ));
                 }
             }
 
             if let Some(non_empty) = args.non_empty.as_ref() {
-                if !is_string_ty(parse_ty) {
+                if !is_string_ty(parse_ty) && vec_inner_ty.is_none() {
                     return Err(syn::Error::new_spanned(
                         non_empty,
-                        "`#[env(non_empty)]` requires a `String` or `Option<String>` field",
+                        "`#[env(non_empty)]` requires a `String`, `Option<String>`, `Vec<T>`, or `Option<Vec<T>>` field",
+                    ));
+                }
+            }
+
+            if let Some(filter_empty) = args.filter_empty.as_ref() {
+                if vec_inner_ty.is_none() {
+                    return Err(syn::Error::new_spanned(
+                        filter_empty,
+                        "`#[env(filter_empty)]` requires a `Vec<T>` or `Option<Vec<T>>` field",
                     ));
                 }
             }
@@ -1150,6 +1306,42 @@ fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
                 }
             }
 
+            if let Some(each_min) = args.each_min.as_ref() {
+                if vec_inner_ty.is_none() || !is_numeric_ty(item_ty) {
+                    return Err(syn::Error::new_spanned(
+                        each_min,
+                        "`#[env(each_min = ...)]` requires a `Vec<T>` or `Option<Vec<T>>` field with an integer or float item type",
+                    ));
+                }
+            }
+
+            if let Some(each_max) = args.each_max.as_ref() {
+                if vec_inner_ty.is_none() || !is_numeric_ty(item_ty) {
+                    return Err(syn::Error::new_spanned(
+                        each_max,
+                        "`#[env(each_max = ...)]` requires a `Vec<T>` or `Option<Vec<T>>` field with an integer or float item type",
+                    ));
+                }
+            }
+
+            if let Some((min_length, _)) = args.min_length.as_ref() {
+                if vec_inner_ty.is_none() {
+                    return Err(syn::Error::new_spanned(
+                        min_length,
+                        "`#[env(min_length = ...)]` requires a `Vec<T>` or `Option<Vec<T>>` field",
+                    ));
+                }
+            }
+
+            if let Some((max_length, _)) = args.max_length.as_ref() {
+                if vec_inner_ty.is_none() {
+                    return Err(syn::Error::new_spanned(
+                        max_length,
+                        "`#[env(max_length = ...)]` requires a `Vec<T>` or `Option<Vec<T>>` field",
+                    ));
+                }
+            }
+
             Ok(EnvField {
                 ident,
                 ty: field.ty.clone(),
@@ -1157,8 +1349,13 @@ fn parse_env_fields(input: &DeriveInput) -> syn::Result<Vec<EnvField>> {
                 mode,
                 trim: args.trim.is_some(),
                 non_empty: args.non_empty.is_some(),
+                filter_empty: args.filter_empty.is_some(),
                 min: args.min,
                 max: args.max,
+                each_min: args.each_min,
+                each_max: args.each_max,
+                min_length: args.min_length.map(|(_, value)| value),
+                max_length: args.max_length.map(|(_, value)| value),
             })
         })
         .collect()
@@ -1199,6 +1396,20 @@ fn parse_env_field_args(field: &syn::Field) -> syn::Result<EnvFieldArgs> {
                 Meta::NameValue(name_value) if name_value.path.is_ident("max") => {
                     args.max = Some(parse_numeric_bound_expr(name_value.value, "max")?);
                 }
+                Meta::NameValue(name_value) if name_value.path.is_ident("each_min") => {
+                    args.each_min = Some(parse_numeric_bound_expr(name_value.value, "each_min")?);
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("each_max") => {
+                    args.each_max = Some(parse_numeric_bound_expr(name_value.value, "each_max")?);
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("min_length") => {
+                    let path = name_value.path;
+                    args.min_length = Some((path, parse_length_bound_expr(name_value.value, "min_length")?));
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("max_length") => {
+                    let path = name_value.path;
+                    args.max_length = Some((path, parse_length_bound_expr(name_value.value, "max_length")?));
+                }
                 Meta::Path(path) if path.is_ident("optional") => {
                     args.optional = Some(path);
                 }
@@ -1207,6 +1418,9 @@ fn parse_env_field_args(field: &syn::Field) -> syn::Result<EnvFieldArgs> {
                 }
                 Meta::Path(path) if path.is_ident("non_empty") => {
                     args.non_empty = Some(path);
+                }
+                Meta::Path(path) if path.is_ident("filter_empty") => {
+                    args.filter_empty = Some(path);
                 }
                 other => {
                     return Err(syn::Error::new_spanned(other, "unsupported `#[env]` argument"));
@@ -1229,6 +1443,19 @@ fn parse_numeric_bound_expr(value: Expr, name: &str) -> syn::Result<Expr> {
     ))
 }
 
+fn parse_length_bound_expr(value: Expr, name: &str) -> syn::Result<usize> {
+    if let Expr::Lit(ExprLit { lit: Lit::Int(value), .. }) = &value {
+        return value
+            .base10_parse::<usize>()
+            .map_err(|_| syn::Error::new_spanned(value, format!("`#[env({name} = ...)]` expects a non-negative integer literal")));
+    }
+
+    Err(syn::Error::new_spanned(
+        value,
+        format!("`#[env({name} = ...)]` expects a non-negative integer literal"),
+    ))
+}
+
 fn is_numeric_bound_expr(value: &Expr) -> bool {
     match value {
         Expr::Lit(ExprLit {
@@ -1247,6 +1474,27 @@ fn option_inner_ty(ty: &Type) -> Option<Type> {
 
     let segment = type_path.path.segments.last()?;
     if segment.ident != "Option" {
+        return None;
+    }
+
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+
+    let Some(GenericArgument::Type(inner_ty)) = args.args.first() else {
+        return None;
+    };
+
+    Some(inner_ty.clone())
+}
+
+fn vec_inner_ty(ty: &Type) -> Option<Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Vec" {
         return None;
     }
 
