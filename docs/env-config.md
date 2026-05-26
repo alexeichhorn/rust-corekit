@@ -179,6 +179,9 @@ Integer and float fields can define inclusive bounds:
 #[env(min = 1, max = 60)]
 pub REQUEST_TIMEOUT_SECONDS: u64,
 
+#[env(default = 4, min = 1, max = 8)]
+pub WORKER_THREADS: usize,
+
 #[env(min = 0.0, max = 1.0)]
 pub SAMPLING_RATE: f64,
 ```
@@ -199,7 +202,7 @@ Out-of-range values fail loading with an invalid env var error.
 
 - `String`
 - `bool`
-- integer and float types
+- integer and float types, including `usize`
 - `Vec<T>` for comma-separated values where `T` implements `FromStr`
 - `Option<T>`
 - custom types implementing `FromStr`
