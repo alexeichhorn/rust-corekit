@@ -3,6 +3,7 @@ use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::process;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -10,6 +11,24 @@ use corekit::prelude::*;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 static TEMP_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, PartialEq, Eq)]
+enum VectorMode {
+    Fast,
+    Safe,
+}
+
+impl FromStr for VectorMode {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "fast" => Ok(Self::Fast),
+            "safe" => Ok(Self::Safe),
+            _ => Err(()),
+        }
+    }
+}
 
 #[derive(Debug, EnvConfig)]
 struct RequiredPrimitives {
@@ -73,6 +92,44 @@ struct OptionalEnv {
     corekit_optional_worker_count: Option<u16>,
     #[env(optional)]
     corekit_optional_feature_enabled: Option<bool>,
+}
+
+#[derive(Debug, EnvConfig)]
+struct VectorEnv {
+    #[env(trim, filter_empty, non_empty, min_length = 2, max_length = 3)]
+    corekit_vector_strings: Vec<String>,
+    #[env(trim, filter_empty, each_min = 1, each_max = 10)]
+    corekit_vector_numbers: Vec<u16>,
+    #[env(trim, filter_empty)]
+    corekit_vector_flags: Vec<bool>,
+    #[env(trim, filter_empty)]
+    corekit_vector_secret_values: Vec<SecretString>,
+    #[env(trim, filter_empty)]
+    corekit_vector_custom_modes: Vec<VectorMode>,
+    #[env(trim, filter_empty)]
+    corekit_vector_optional_numbers: Option<Vec<u16>>,
+    #[env(default = " alpha, beta , , gamma ", trim, filter_empty)]
+    corekit_vector_default_strings: Vec<String>,
+}
+
+#[derive(Debug, EnvConfig)]
+#[allow(dead_code)]
+struct InvalidVectorParseEnv {
+    corekit_invalid_vector_numbers: Vec<u16>,
+}
+
+#[derive(Debug, EnvConfig)]
+#[allow(dead_code)]
+struct InvalidVectorLengthEnv {
+    #[env(trim, filter_empty, non_empty, min_length = 2, max_length = 3)]
+    corekit_invalid_vector_names: Vec<String>,
+}
+
+#[derive(Debug, EnvConfig)]
+#[allow(dead_code)]
+struct InvalidVectorEachBoundsEnv {
+    #[env(each_min = 1, each_max = 3)]
+    corekit_invalid_vector_numbers: Vec<u16>,
 }
 
 #[derive(Debug, EnvConfig)]
@@ -452,6 +509,122 @@ fn present_invalid_option_values_fail() {
             assert_eq!(errors[1].kind(), EnvErrorKind::Invalid);
         },
     );
+}
+
+#[test]
+fn vec_fields_parse_csv_items_with_vector_rules() {
+    with_env(
+        &[
+            ("COREKIT_VECTOR_STRINGS", Some(" alpha, , beta ,gamma ")),
+            ("COREKIT_VECTOR_NUMBERS", Some(" 1, 5, 10 ")),
+            ("COREKIT_VECTOR_FLAGS", Some(" true, false, true ")),
+            ("COREKIT_VECTOR_SECRET_VALUES", Some(" sk-one, sk-two ")),
+            ("COREKIT_VECTOR_CUSTOM_MODES", Some(" fast, safe ")),
+            ("COREKIT_VECTOR_OPTIONAL_NUMBERS", Some(" 2, ,3 ")),
+            ("COREKIT_VECTOR_DEFAULT_STRINGS", None),
+        ],
+        || {
+            let config = VectorEnv::load().unwrap();
+
+            assert_eq!(config.corekit_vector_strings, ["alpha", "beta", "gamma"]);
+            assert_eq!(config.corekit_vector_numbers, [1, 5, 10]);
+            assert_eq!(config.corekit_vector_flags, [true, false, true]);
+            assert_eq!(config.corekit_vector_secret_values[0].expose(), "sk-one");
+            assert_eq!(config.corekit_vector_secret_values[1].expose(), "sk-two");
+            assert_eq!(config.corekit_vector_custom_modes, [VectorMode::Fast, VectorMode::Safe]);
+            assert_eq!(config.corekit_vector_optional_numbers, Some(vec![2, 3]));
+            assert_eq!(config.corekit_vector_default_strings, ["alpha", "beta", "gamma"]);
+        },
+    );
+}
+
+#[test]
+fn missing_optional_vec_fields_stay_none() {
+    with_env(
+        &[
+            ("COREKIT_VECTOR_STRINGS", Some("alpha,beta")),
+            ("COREKIT_VECTOR_NUMBERS", Some("1,2")),
+            ("COREKIT_VECTOR_FLAGS", Some("true")),
+            ("COREKIT_VECTOR_SECRET_VALUES", Some("sk-one")),
+            ("COREKIT_VECTOR_CUSTOM_MODES", Some("fast")),
+            ("COREKIT_VECTOR_OPTIONAL_NUMBERS", None),
+            ("COREKIT_VECTOR_DEFAULT_STRINGS", None),
+        ],
+        || {
+            let config = VectorEnv::load().unwrap();
+
+            assert_eq!(config.corekit_vector_optional_numbers, None);
+        },
+    );
+}
+
+#[test]
+fn vec_parse_failures_report_invalid_item_type() {
+    with_env(&[("COREKIT_INVALID_VECTOR_NUMBERS", Some("1,nope,3"))], || {
+        let error = InvalidVectorParseEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_VECTOR_NUMBERS");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+        assert_eq!(errors[0].reason(), "invalid value, expected u16");
+    });
+}
+
+#[test]
+fn vec_non_empty_and_length_rules_validate_final_items() {
+    with_env(&[("COREKIT_INVALID_VECTOR_NAMES", Some(" , , "))], || {
+        let error = InvalidVectorLengthEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_VECTOR_NAMES");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+        assert_eq!(errors[0].reason(), "must contain at least one item");
+    });
+
+    with_env(&[("COREKIT_INVALID_VECTOR_NAMES", Some("alpha"))], || {
+        let error = InvalidVectorLengthEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_VECTOR_NAMES");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+        assert_eq!(errors[0].reason(), "must contain at least 2 items");
+    });
+
+    with_env(&[("COREKIT_INVALID_VECTOR_NAMES", Some("alpha,beta,gamma,delta"))], || {
+        let error = InvalidVectorLengthEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_VECTOR_NAMES");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+        assert_eq!(errors[0].reason(), "must contain at most 3 items");
+    });
+}
+
+#[test]
+fn vec_each_min_and_each_max_validate_numeric_items() {
+    with_env(&[("COREKIT_INVALID_VECTOR_NUMBERS", Some("1,4"))], || {
+        let error = InvalidVectorEachBoundsEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_VECTOR_NUMBERS");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+        assert_eq!(errors[0].reason(), "must be less than or equal to 3");
+    });
+
+    with_env(&[("COREKIT_INVALID_VECTOR_NUMBERS", Some("0,2"))], || {
+        let error = InvalidVectorEachBoundsEnv::load().unwrap_err();
+        let errors = error.errors();
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name(), "COREKIT_INVALID_VECTOR_NUMBERS");
+        assert_eq!(errors[0].kind(), EnvErrorKind::Invalid);
+        assert_eq!(errors[0].reason(), "must be greater than or equal to 1");
+    });
 }
 
 #[test]
