@@ -127,6 +127,19 @@ async fn call_api() -> Result<String, ApiError> {
 }
 ```
 
+## MapVec
+
+Use `.map_vec()` for `.iter().map(...).collect::<Vec<_>>()` on vectors, slices, and arrays.
+It borrows the input and eagerly returns a new vector, without cloning elements implicitly.
+
+```rust
+use corekit::prelude::*;
+
+let ids = plan.deletions.map_vec(|request| request.job_id);
+```
+
+Keep iterator chains when combining mapping with filtering or other operations, so you only collect once.
+
 ## VecInto
 
 Use `VecInto` to convert every element in a vector through `Into`.

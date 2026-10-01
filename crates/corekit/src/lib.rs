@@ -2,6 +2,7 @@
 
 #[path = "env_config.rs"]
 mod env_config_runtime;
+mod map_vec;
 mod retry;
 mod secret_string;
 mod timeout;
@@ -12,6 +13,7 @@ pub mod openapi;
 
 pub use corekit_macros::*;
 pub use env_config_runtime::{EnvError, EnvErrorKind, EnvVarError};
+pub use map_vec::MapVec;
 pub use retry::Retryable;
 pub use secret_string::SecretString;
 pub use timeout::FromTimeout;
