@@ -140,6 +140,22 @@ let ids = plan.deletions.map_vec(|request| request.job_id);
 
 Keep iterator chains when combining mapping with filtering or other operations, so you only collect once.
 
+## KeyBy
+
+Use `.key_by()` to collect vectors, arrays, slices, or iterator chains into a `HashMap`
+with a key derived from each item.
+
+```rust
+use corekit::prelude::*;
+
+let job_refs_by_id = jobs.iter().key_by(|job| job.id);
+let jobs_by_id = jobs.key_by(|job| job.id);
+```
+
+Calling it on an owned vector consumes the vector. Use `.iter()` or a slice to borrow
+the values. No items are cloned implicitly. Later items with equal keys replace earlier
+values, and the map's iteration order is unspecified.
+
 ## VecInto
 
 Use `VecInto` to convert every element in a vector through `Into`.
