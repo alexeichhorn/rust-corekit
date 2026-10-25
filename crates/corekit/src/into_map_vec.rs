@@ -17,6 +17,14 @@ pub trait IntoMapVec: IntoIterator + Sized {
     fn into_map_vec<U>(self, f: impl FnMut(Self::Item) -> U) -> Vec<U> {
         self.into_iter().map(f).collect()
     }
+
+    /// Map items from `self.into_iter()` in order, stopping at the first error.
+    ///
+    /// Ownership follows [`Self::into_map_vec`]. On error, collected values are
+    /// dropped and later items are not mapped. Earlier mapper side effects remain.
+    fn try_into_map_vec<U, E>(self, f: impl FnMut(Self::Item) -> Result<U, E>) -> Result<Vec<U>, E> {
+        self.into_iter().map(f).collect()
+    }
 }
 
 impl<I: IntoIterator> IntoMapVec for I {}
