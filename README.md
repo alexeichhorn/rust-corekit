@@ -140,6 +140,9 @@ let ids = plan.deletions.map_vec(|request| request.job_id);
 
 Keep iterator chains when combining mapping with filtering or other operations, so you only collect once.
 
+Use `.try_map_vec()` when the mapper returns `Result<U, E>`. It borrows the input
+and returns `Result<Vec<U>, E>`, stopping at the first error.
+
 ## IntoMapVec
 
 Use `.into_map_vec()` for `.into_iter().map(...).collect::<Vec<_>>()` on collections
@@ -152,6 +155,9 @@ use corekit::prelude::*;
 let names = vec![String::from("Alex"), String::from("Sam")];
 let bytes = names.into_map_vec(|name| name.into_bytes());
 ```
+
+Use `.try_into_map_vec()` when the mapper returns `Result<U, E>`. It follows the same
+ownership behavior and returns `Result<Vec<U>, E>`, stopping at the first error.
 
 ## KeyBy
 

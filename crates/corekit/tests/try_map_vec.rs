@@ -2,7 +2,7 @@ use corekit::MapVec;
 
 #[test]
 fn maps_in_order_with_mutable_mapper_and_output_borrowing_from_input() {
-    let names = vec![String::from("Alex"), String::from("Sam")];
+    let names: Vec<String> = vec![String::from("Alex"), String::from("Sam")];
     let mut calls = 0;
 
     let mapped: Result<Vec<(usize, &str)>, &str> = names.try_map_vec(|name| {
