@@ -2,6 +2,7 @@
 
 #[path = "env_config.rs"]
 mod env_config_runtime;
+mod into_map_vec;
 mod key_by;
 mod map_vec;
 mod retry;
@@ -14,6 +15,7 @@ pub mod openapi;
 
 pub use corekit_macros::*;
 pub use env_config_runtime::{EnvError, EnvErrorKind, EnvVarError};
+pub use into_map_vec::IntoMapVec;
 pub use key_by::KeyBy;
 pub use map_vec::MapVec;
 pub use retry::Retryable;

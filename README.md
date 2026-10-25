@@ -140,6 +140,19 @@ let ids = plan.deletions.map_vec(|request| request.job_id);
 
 Keep iterator chains when combining mapping with filtering or other operations, so you only collect once.
 
+## IntoMapVec
+
+Use `.into_map_vec()` for `.into_iter().map(...).collect::<Vec<_>>()` on collections
+or iterator chains. An owned collection moves its items into the mapper. Slices and
+borrowing iterators yield references; use `.map_vec()` to borrow a collection directly.
+
+```rust
+use corekit::prelude::*;
+
+let names = vec![String::from("Alex"), String::from("Sam")];
+let bytes = names.into_map_vec(|name| name.into_bytes());
+```
+
 ## KeyBy
 
 Use `.key_by()` to collect vectors, arrays, slices, or iterator chains into a `HashMap`
